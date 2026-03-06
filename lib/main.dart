@@ -194,7 +194,6 @@ class _PlanningTaskLayout {
     required this.endMinutes,
     required this.column,
     required this.totalColumns,
-    this.columnSpan = 1,
   });
 
   final TaskItem task;
@@ -202,7 +201,7 @@ class _PlanningTaskLayout {
   final int endMinutes;
   final int column;
   int totalColumns;
-  int columnSpan;
+  int columnSpan = 1;
 }
 
 class ProjectItem {
@@ -279,6 +278,11 @@ class TodayPage extends StatefulWidget {
 class _TodayPageState extends State<TodayPage> {
   static const _tasksStorageKey = 'tamago_tasks_v1';
   static const _projectsStorageKey = 'tamago_projects_v1';
+  static const List<String> _reminderOptions = <String>[
+    '1 jour avant',
+    '1h avant',
+    '10 min avant',
+  ];
 
   final TextEditingController _quickAddTaskController = TextEditingController();
   final TextEditingController _quickAddProjectController =
@@ -334,6 +338,36 @@ class _TodayPageState extends State<TodayPage> {
         first.day == second.day;
   }
 
+  List<String> _parseReminderSelections(String rawReminder) {
+    final trimmed = rawReminder.trim();
+    if (trimmed.isEmpty || trimmed == 'Aucun') {
+      return const <String>[];
+    }
+
+    final tokens = trimmed
+        .split(RegExp(r'\||,'))
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty && value != 'Aucun');
+
+    return tokens
+        .where((value) => _reminderOptions.contains(value))
+        .toSet()
+        .toList();
+  }
+
+  String _encodeReminderSelections(Set<String> reminders) {
+    if (reminders.isEmpty) {
+      return 'Aucun';
+    }
+    final ordered = _reminderOptions
+        .where((option) => reminders.contains(option))
+        .toList();
+    if (ordered.isEmpty) {
+      return 'Aucun';
+    }
+    return ordered.join('|');
+  }
+
   Duration? _reminderOffset(String reminder) {
     switch (reminder) {
       case '1 jour avant':
@@ -351,10 +385,14 @@ class _TodayPageState extends State<TodayPage> {
     return DateTime(day.year, day.month, day.day, time.hour, time.minute);
   }
 
-  String _reminderId(TaskItem task, DateTime occurrenceDate) {
+  String _reminderId(
+    TaskItem task,
+    DateTime occurrenceDate,
+    String reminderOption,
+  ) {
     final start = task.startTime;
     final startLabel = start == null ? 'none' : '${start.hour}:${start.minute}';
-    return '${task.name}|${task.date.toIso8601String()}|${task.endDate.toIso8601String()}|$startLabel|${occurrenceDate.toIso8601String()}|${task.reminder}';
+    return '${task.name}|${task.date.toIso8601String()}|${task.endDate.toIso8601String()}|$startLabel|${occurrenceDate.toIso8601String()}|$reminderOption';
   }
 
   void _refreshLiveNowAndReminders() {
@@ -368,12 +406,12 @@ class _TodayPageState extends State<TodayPage> {
     final newNotices = <_ReminderNotice>[];
 
     for (final task in _tasks) {
-      if (task.reminder == 'Aucun' || task.startTime == null) {
+      if (task.startTime == null) {
         continue;
       }
 
-      final offset = _reminderOffset(task.reminder);
-      if (offset == null) {
+      final reminderSelections = _parseReminderSelections(task.reminder);
+      if (reminderSelections.isEmpty) {
         continue;
       }
 
@@ -383,23 +421,30 @@ class _TodayPageState extends State<TodayPage> {
         }
 
         final startDateTime = _withTime(occurrenceDate, task.startTime!);
-        final triggerDateTime = startDateTime.subtract(offset);
-        final reminderId = _reminderId(task, occurrenceDate);
-        if (_dismissedReminderIds.contains(reminderId) ||
-            _activeReminders.containsKey(reminderId) ||
-            newNotices.any((notice) => notice.id == reminderId)) {
-          continue;
-        }
+        for (final reminderOption in reminderSelections) {
+          final offset = _reminderOffset(reminderOption);
+          if (offset == null) {
+            continue;
+          }
 
-        if (!now.isBefore(triggerDateTime) && !now.isAfter(startDateTime)) {
-          newNotices.add(
-            _ReminderNotice(
-              id: reminderId,
-              title: task.name,
-              subtitle:
-                  'Rappel ${task.reminder} • ${_twoDigits(occurrenceDate.day)}/${_twoDigits(occurrenceDate.month)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
-            ),
-          );
+          final triggerDateTime = startDateTime.subtract(offset);
+          final reminderId = _reminderId(task, occurrenceDate, reminderOption);
+          if (_dismissedReminderIds.contains(reminderId) ||
+              _activeReminders.containsKey(reminderId) ||
+              newNotices.any((notice) => notice.id == reminderId)) {
+            continue;
+          }
+
+          if (!now.isBefore(triggerDateTime) && !now.isAfter(startDateTime)) {
+            newNotices.add(
+              _ReminderNotice(
+                id: reminderId,
+                title: task.name,
+                subtitle:
+                    'Rappel $reminderOption • ${_twoDigits(occurrenceDate.day)}/${_twoDigits(occurrenceDate.month)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
+              ),
+            );
+          }
         }
       }
     }
@@ -569,6 +614,38 @@ class _TodayPageState extends State<TodayPage> {
     return '${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)} - ${_twoDigits(task.endTime!.hour)}:${_twoDigits(task.endTime!.minute)}';
   }
 
+  bool _isRecurringTask(TaskItem task) {
+    return task.recurrence != 'Aucune';
+  }
+
+  Widget _buildTaskNameWithRecurrenceIcon(
+    TaskItem task, {
+    TextStyle? style,
+    int maxLines = 1,
+  }) {
+    final titleText = task.project.trim().isEmpty
+        ? task.name
+        : '${task.name} • ${task.project.trim()}';
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_isRecurringTask(task)) ...[
+          Icon(Icons.repeat_rounded, size: 16, color: Colors.black87),
+          const SizedBox(width: 4),
+        ],
+        Expanded(
+          child: Text(
+            titleText,
+            style: style,
+            maxLines: maxLines,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+
   Future<void> _openNewTaskForDate(DateTime date) async {
     final newTask = TaskItem(name: 'Nouvelle tache', date: _dateOnly(date));
     await _openTaskEditor(newTask, isNew: true);
@@ -611,7 +688,7 @@ class _TodayPageState extends State<TodayPage> {
   }
 
   List<TaskItem> get _todayTasks {
-    return _tasks.where((task) => _isSameDay(task.date, _todayOnly)).toList();
+    return _tasksForDate(_todayOnly);
   }
 
   ProjectItem? get _selectedProject {
@@ -705,11 +782,12 @@ class _TodayPageState extends State<TodayPage> {
 
     final movedTask = reordered.removeAt(oldIndex);
     reordered.insert(newIndex, movedTask);
+    final day = _todayOnly;
 
     setState(() {
       var todayIndex = 0;
       for (var i = 0; i < _tasks.length; i++) {
-        if (_isSameDay(_tasks[i].date, _todayOnly)) {
+        if (_taskOccursOnDate(_tasks[i], day)) {
           _tasks[i] = reordered[todayIndex];
           todayIndex += 1;
         }
@@ -901,7 +979,7 @@ class _TodayPageState extends State<TodayPage> {
     bool allDay = task.allDay;
     TimeOfDay? startTime = task.startTime;
     TimeOfDay? endTime = task.endTime;
-    String reminder = task.reminder;
+    final selectedReminders = _parseReminderSelections(task.reminder).toSet();
     String recurrence = task.recurrence;
     String status = task.status;
     const weekdays = <String>[
@@ -1125,16 +1203,7 @@ class _TodayPageState extends State<TodayPage> {
               'Jours de la semaine',
               'Mensuelle',
             };
-            const reminderOptions = <String>{
-              'Aucun',
-              '1 jour avant',
-              '1h avant',
-              '10 min avant',
-            };
             const statusOptions = <String>{'À faire', 'En cours', 'Terminé'};
-            final effectiveReminder = reminderOptions.contains(reminder)
-                ? reminder
-                : 'Aucun';
             final effectiveRecurrenceMode =
                 recurrenceOptions.contains(recurrenceMode)
                 ? recurrenceMode
@@ -1158,8 +1227,7 @@ class _TodayPageState extends State<TodayPage> {
                         : constraints.maxWidth - 24;
                     final dialogHeight = constraints.maxHeight <= 360
                         ? constraints.maxHeight - 16
-                        : (constraints.maxHeight * 0.82).clamp(320.0, 720.0)
-                              as double;
+                        : (constraints.maxHeight * 0.82).clamp(320.0, 720.0);
 
                     final centeredLeft =
                         (constraints.maxWidth - dialogWidth) / 2;
@@ -1172,12 +1240,14 @@ class _TodayPageState extends State<TodayPage> {
                     final maxTopRaw = constraints.maxHeight - dialogHeight - 8;
                     final maxTop = maxTopRaw < minTop ? minTop : maxTopRaw;
 
-                    final left =
-                        (centeredLeft + dialogOffset.dx).clamp(minLeft, maxLeft)
-                            as double;
-                    final top =
-                        (centeredTop + dialogOffset.dy).clamp(minTop, maxTop)
-                            as double;
+                    final left = (centeredLeft + dialogOffset.dx).clamp(
+                      minLeft,
+                      maxLeft,
+                    );
+                    final top = (centeredTop + dialogOffset.dy).clamp(
+                      minTop,
+                      maxTop,
+                    );
 
                     return Stack(
                       children: [
@@ -1336,36 +1406,54 @@ class _TodayPageState extends State<TodayPage> {
                                             ],
                                           ),
                                           const SizedBox(height: 12),
-                                          DropdownButtonFormField<String>(
-                                            initialValue: effectiveReminder,
-                                            decoration: const InputDecoration(
-                                              labelText: 'Rappel',
-                                            ),
-                                            items: const [
-                                              DropdownMenuItem(
-                                                value: 'Aucun',
-                                                child: Text('Aucun'),
+                                          Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                'Rappel',
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.titleSmall,
                                               ),
-                                              DropdownMenuItem(
-                                                value: '1 jour avant',
-                                                child: Text('1 jour avant'),
+                                              const SizedBox(height: 8),
+                                              Wrap(
+                                                spacing: 8,
+                                                runSpacing: 8,
+                                                children: _reminderOptions.map((
+                                                  option,
+                                                ) {
+                                                  final isSelected =
+                                                      selectedReminders
+                                                          .contains(option);
+                                                  return FilterChip(
+                                                    label: Text(option),
+                                                    selected: isSelected,
+                                                    onSelected: (selected) {
+                                                      setModalState(() {
+                                                        if (selected) {
+                                                          selectedReminders.add(
+                                                            option,
+                                                          );
+                                                        } else {
+                                                          selectedReminders
+                                                              .remove(option);
+                                                        }
+                                                      });
+                                                    },
+                                                  );
+                                                }).toList(),
                                               ),
-                                              DropdownMenuItem(
-                                                value: '1h avant',
-                                                child: Text('1h avant'),
-                                              ),
-                                              DropdownMenuItem(
-                                                value: '10 min avant',
-                                                child: Text('10 min avant'),
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                selectedReminders.isEmpty
+                                                    ? 'Aucun rappel selectionne'
+                                                    : '${selectedReminders.length} rappel(s) selectionne(s)',
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.bodySmall,
                                               ),
                                             ],
-                                            onChanged: (value) {
-                                              if (value != null) {
-                                                setModalState(() {
-                                                  reminder = value;
-                                                });
-                                              }
-                                            },
                                           ),
                                           const SizedBox(height: 12),
                                           DropdownButtonFormField<String>(
@@ -1608,7 +1696,10 @@ class _TodayPageState extends State<TodayPage> {
                                               task.duration = durationController
                                                   .text
                                                   .trim();
-                                              task.reminder = reminder;
+                                              task.reminder =
+                                                  _encodeReminderSelections(
+                                                    selectedReminders,
+                                                  );
                                               if (recurrenceMode ==
                                                   'Jours de la semaine') {
                                                 final orderedDays = weekdays
@@ -1745,8 +1836,7 @@ class _TodayPageState extends State<TodayPage> {
                         : constraints.maxWidth - 24;
                     final dialogHeight = constraints.maxHeight <= 360
                         ? constraints.maxHeight - 16
-                        : (constraints.maxHeight * 0.82).clamp(320.0, 720.0)
-                              as double;
+                        : (constraints.maxHeight * 0.82).clamp(320.0, 720.0);
 
                     final centeredLeft =
                         (constraints.maxWidth - dialogWidth) / 2;
@@ -1759,12 +1849,14 @@ class _TodayPageState extends State<TodayPage> {
                     final maxTopRaw = constraints.maxHeight - dialogHeight - 8;
                     final maxTop = maxTopRaw < minTop ? minTop : maxTopRaw;
 
-                    final left =
-                        (centeredLeft + dialogOffset.dx).clamp(minLeft, maxLeft)
-                            as double;
-                    final top =
-                        (centeredTop + dialogOffset.dy).clamp(minTop, maxTop)
-                            as double;
+                    final left = (centeredLeft + dialogOffset.dx).clamp(
+                      minLeft,
+                      maxLeft,
+                    );
+                    final top = (centeredTop + dialogOffset.dy).clamp(
+                      minTop,
+                      maxTop,
+                    );
 
                     return Stack(
                       children: [
@@ -2114,9 +2206,9 @@ class _TodayPageState extends State<TodayPage> {
           ),
           tooltip: 'Changer le statut',
         ),
-        title: Text(task.name),
-        subtitle: Text(
-          '${task.status} • ${task.project.isEmpty ? 'Sans projet' : task.project}',
+        title: _buildTaskNameWithRecurrenceIcon(
+          task,
+          style: Theme.of(context).textTheme.titleMedium,
         ),
         trailing: IconButton(
           onPressed: () => _openTaskEditor(task),
@@ -2833,12 +2925,25 @@ class _TodayPageState extends State<TodayPage> {
                                               10,
                                             ),
                                           ),
-                                          child: Text(
-                                            '${layout.task.name}\n${_timeRangeLabel(layout.task)}',
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.bodySmall,
-                                            overflow: TextOverflow.ellipsis,
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              _buildTaskNameWithRecurrenceIcon(
+                                                layout.task,
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.bodySmall,
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                _timeRangeLabel(layout.task),
+                                                style: Theme.of(
+                                                  context,
+                                                ).textTheme.bodySmall,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ),
@@ -2918,7 +3023,10 @@ class _TodayPageState extends State<TodayPage> {
                           for (final task in unscheduled)
                             ListTile(
                               contentPadding: EdgeInsets.zero,
-                              title: Text(task.name),
+                              title: _buildTaskNameWithRecurrenceIcon(
+                                task,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
                               subtitle: Text(
                                 task.project.isEmpty
                                     ? 'Sans projet'
@@ -2958,7 +3066,17 @@ class _TodayPageState extends State<TodayPage> {
             itemCount: days.length,
             itemBuilder: (context, index) {
               final day = days[index];
-              final tasks = _tasksForDate(day, timedOnly: true);
+              final tasks = _tasksForDate(day);
+              final timedTasks = tasks
+                  .where(
+                    (task) => task.startTime != null && task.endTime != null,
+                  )
+                  .toList();
+              final unscheduledTasks = tasks
+                  .where(
+                    (task) => task.startTime == null || task.endTime == null,
+                  )
+                  .toList();
               final isToday = _isSameDay(day, _todayOnly);
 
               return GestureDetector(
@@ -2984,38 +3102,75 @@ class _TodayPageState extends State<TodayPage> {
                       const SizedBox(height: 8),
                       if (tasks.isEmpty)
                         Text(
-                          'Aucune tache horaire',
+                          'Aucune tache',
                           style: Theme.of(context).textTheme.bodySmall,
                         )
                       else
                         Expanded(
-                          child: ListView.builder(
-                            itemCount: tasks.length,
-                            itemBuilder: (context, taskIndex) {
-                              final task = tasks[taskIndex];
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 6),
-                                child: InkWell(
-                                  onTap: () => _openTaskEditor(task),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 6,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: _taskDisplayColor(task),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    child: Text(
-                                      '${_timeRangeLabel(task)}\n${task.name}',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.bodySmall,
+                          child: ListView(
+                            children: [
+                              ...timedTasks.map((task) {
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: InkWell(
+                                    onTap: () => _openTaskEditor(task),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: _taskDisplayColor(task),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Text(
+                                        _timeRangeLabel(task),
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
                                     ),
                                   ),
-                                ),
-                              );
-                            },
+                                );
+                              }),
+                              ...unscheduledTasks.map((task) {
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 6),
+                                  child: InkWell(
+                                    onTap: () => _openTaskEditor(task),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: _taskDisplayColor(task),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          _buildTaskNameWithRecurrenceIcon(
+                                            task,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            'Sans horaire',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              }),
+                            ],
                           ),
                         ),
                     ],
@@ -3064,7 +3219,7 @@ class _TodayPageState extends State<TodayPage> {
               ),
               itemBuilder: (context, index) {
                 final day = days[index];
-                final tasks = _tasksForDate(day, timedOnly: true);
+                final tasks = _tasksForDate(day);
                 final inCurrentMonth = day.month == anchorDate.month;
                 final isToday = _isSameDay(day, _todayOnly);
 
@@ -3089,30 +3244,65 @@ class _TodayPageState extends State<TodayPage> {
                           style: Theme.of(context).textTheme.titleSmall,
                         ),
                         const SizedBox(height: 4),
-                        for (final task in tasks.take(3))
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 3),
-                            child: Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                                vertical: 3,
-                              ),
-                              decoration: BoxDecoration(
-                                color: _taskDisplayColor(task),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                '${_twoDigits(task.startTime?.hour ?? 0)}:${_twoDigits(task.startTime?.minute ?? 0)} ${task.name}',
-                                style: Theme.of(context).textTheme.bodySmall,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                        if (tasks.isNotEmpty)
+                          Expanded(
+                            child: ListView.builder(
+                              padding: EdgeInsets.zero,
+                              itemCount: tasks.length,
+                              itemBuilder: (context, taskIndex) {
+                                final task = tasks[taskIndex];
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 3),
+                                  child: InkWell(
+                                    onTap: () => _openTaskEditor(task),
+                                    child: Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 4,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: _taskDisplayColor(task),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Text(
+                                            task.startTime == null
+                                                ? 'Journee'
+                                                : '${_twoDigits(task.startTime?.hour ?? 0)}:${_twoDigits(task.startTime?.minute ?? 0)}',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          if (_isRecurringTask(task)) ...[
+                                            const Icon(
+                                              Icons.repeat_rounded,
+                                              size: 12,
+                                              color: Colors.black87,
+                                            ),
+                                            const SizedBox(width: 2),
+                                          ],
+                                          Expanded(
+                                            child: Text(
+                                              task.name,
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
                             ),
-                          ),
-                        if (tasks.length > 3)
-                          Text(
-                            '+${tasks.length - 3} autres',
-                            style: Theme.of(context).textTheme.bodySmall,
                           ),
                       ],
                     ),
