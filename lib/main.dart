@@ -1,13 +1,38 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  runApp(const TamagoApp());
+  runZonedGuarded(
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
+
+      FlutterError.onError = (FlutterErrorDetails details) {
+        debugPrint('[Tamago][FlutterError] ${details.exceptionAsString()}');
+        debugPrint(details.stack?.toString() ?? 'No stack trace');
+      };
+
+      ui.PlatformDispatcher.instance.onError =
+          (Object error, StackTrace stack) {
+            debugPrint('[Tamago][PlatformError] $error');
+            debugPrint(stack.toString());
+            return true;
+          };
+
+      runApp(const TamagoApp());
+    },
+    (Object error, StackTrace stack) {
+      debugPrint('[Tamago][ZoneError] $error');
+      debugPrint(stack.toString());
+    },
+  );
 }
 
 class TamagoApp extends StatelessWidget {
@@ -275,7 +300,7 @@ class TodayPage extends StatefulWidget {
   State<TodayPage> createState() => _TodayPageState();
 }
 
-class _TodayPageState extends State<TodayPage> {
+class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   static const _tasksStorageKey = 'tamago_tasks_v1';
   static const _projectsStorageKey = 'tamago_projects_v1';
   static const List<String> _reminderOptions = <String>[
@@ -289,6 +314,7 @@ class _TodayPageState extends State<TodayPage> {
       TextEditingController();
   final TextEditingController _quickAddProjectTaskController =
       TextEditingController();
+  final TextEditingController _headerPostItController = TextEditingController();
 
   final List<TaskItem> _tasks = [];
   final List<ProjectItem> _projects = [];
@@ -306,21 +332,32 @@ class _TodayPageState extends State<TodayPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    debugPrint('[Tamago][Lifecycle] initState');
     _refreshLiveNowAndReminders();
     _clockTimer = Timer.periodic(
       const Duration(seconds: 20),
       (_) => _refreshLiveNowAndReminders(),
     );
     _loadData();
+    _loadHeaderPostIt();
   }
 
   @override
   void dispose() {
+    debugPrint('[Tamago][Lifecycle] dispose');
+    WidgetsBinding.instance.removeObserver(this);
     _clockTimer?.cancel();
     _quickAddTaskController.dispose();
     _quickAddProjectController.dispose();
     _quickAddProjectTaskController.dispose();
+    _headerPostItController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    debugPrint('[Tamago][Lifecycle] state=$state');
   }
 
   DateTime get _todayOnly {
@@ -733,7 +770,7 @@ class _TodayPageState extends State<TodayPage> {
     return null;
   }
 
-  Color _taskDisplayColor(TaskItem task) {
+  Color _taskMarkerColor(TaskItem task) {
     final linkedProject = _projectForTask(task);
     return linkedProject?.color.color ?? task.color.color;
   }
@@ -743,21 +780,6 @@ class _TodayPageState extends State<TodayPage> {
       (taskColor) => taskColor.color.value == projectColor.color.value,
       orElse: () => TaskColorOption.gris,
     );
-  }
-
-  Widget _buildPlatformDragListener({
-    required int index,
-    required Widget child,
-  }) {
-    final isMobile =
-        !kIsWeb &&
-        (defaultTargetPlatform == TargetPlatform.android ||
-            defaultTargetPlatform == TargetPlatform.iOS);
-
-    if (isMobile) {
-      return ReorderableDelayedDragStartListener(index: index, child: child);
-    }
-    return ReorderableDragStartListener(index: index, child: child);
   }
 
   void _cycleTaskStatus(TaskItem task) {
@@ -774,58 +796,27 @@ class _TodayPageState extends State<TodayPage> {
     _saveProjects();
   }
 
-  void _reorderTodayTasks(int oldIndex, int newIndex) {
-    final reordered = List<TaskItem>.from(_todayTasks);
-    if (newIndex > oldIndex) {
-      newIndex -= 1;
-    }
-
-    final movedTask = reordered.removeAt(oldIndex);
-    reordered.insert(newIndex, movedTask);
-    final day = _todayOnly;
-
+  void _deleteTask(TaskItem task) {
     setState(() {
-      var todayIndex = 0;
-      for (var i = 0; i < _tasks.length; i++) {
-        if (_taskOccursOnDate(_tasks[i], day)) {
-          _tasks[i] = reordered[todayIndex];
-          todayIndex += 1;
-        }
-      }
+      _tasks.remove(task);
     });
     _saveTasks();
   }
 
-  void _reorderProjects(int oldIndex, int newIndex) {
-    if (newIndex > oldIndex) {
-      newIndex -= 1;
-    }
-
+  void _deleteProject(ProjectItem project) {
     setState(() {
-      final movedProject = _projects.removeAt(oldIndex);
-      _projects.insert(newIndex, movedProject);
-    });
-    _saveProjects();
-  }
-
-  void _reorderProjectTasks(ProjectItem project, int oldIndex, int newIndex) {
-    final reordered = List<TaskItem>.from(_tasksForProject(project));
-    if (newIndex > oldIndex) {
-      newIndex -= 1;
-    }
-
-    final movedTask = reordered.removeAt(oldIndex);
-    reordered.insert(newIndex, movedTask);
-
-    setState(() {
-      var projectIndex = 0;
-      for (var i = 0; i < _tasks.length; i++) {
-        if (_taskBelongsToProject(_tasks[i], project)) {
-          _tasks[i] = reordered[projectIndex];
-          projectIndex += 1;
+      _projects.removeWhere((item) => item.id == project.id);
+      if (_selectedProjectId == project.id) {
+        _selectedProjectId = _projects.isEmpty ? null : _projects.first.id;
+      }
+      for (final task in _tasks) {
+        if (task.projectId == project.id) {
+          task.projectId = null;
+          task.project = '';
         }
       }
     });
+    _saveProjects();
     _saveTasks();
   }
 
@@ -964,6 +955,66 @@ class _TodayPageState extends State<TodayPage> {
     final prefs = await SharedPreferences.getInstance();
     final payload = _projects.map((project) => project.toJson()).toList();
     await prefs.setString(_projectsStorageKey, jsonEncode(payload));
+  }
+
+  Future<File> _headerPostItFile() async {
+    final directory = await getApplicationDocumentsDirectory();
+    return File('${directory.path}${Platform.pathSeparator}tamago_post_it.txt');
+  }
+
+  Future<void> _loadHeaderPostIt() async {
+    if (kIsWeb) {
+      return;
+    }
+
+    try {
+      final file = await _headerPostItFile();
+      if (!await file.exists()) {
+        return;
+      }
+      final content = await file.readAsString();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _headerPostItController.text = content;
+      });
+    } catch (_) {}
+  }
+
+  void _clearHeaderPostIt() {
+    setState(() {
+      _headerPostItController.clear();
+    });
+  }
+
+  Future<void> _saveHeaderPostIt() async {
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sauvegarde fichier indisponible sur le web.'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final file = await _headerPostItFile();
+      await file.writeAsString(_headerPostItController.text.trimRight());
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Post-it enregistre dans ${file.path}')),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Echec de la sauvegarde du post-it.')),
+      );
+    }
   }
 
   Future<void> _openTaskEditor(TaskItem task, {bool isNew = false}) async {
@@ -1613,9 +1664,7 @@ class _TodayPageState extends State<TodayPage> {
                                               _saveTasks();
                                               Navigator.of(context).pop();
                                             },
-                                            icon: const Icon(
-                                              Icons.delete_outline,
-                                            ),
+                                            icon: const Icon(Icons.close),
                                             label: const Text('Supprimer'),
                                           ),
                                         ),
@@ -1776,7 +1825,6 @@ class _TodayPageState extends State<TodayPage> {
     DateTime? endDate = project.endDate;
     String status = project.status;
     ProjectColorOption selectedColor = project.color;
-
     String formatDate(DateTime value) {
       return '${value.day.toString().padLeft(2, '0')}/${value.month.toString().padLeft(2, '0')}/${value.year}';
     }
@@ -2182,38 +2230,106 @@ class _TodayPageState extends State<TodayPage> {
     }
 
     return Row(
-      mainAxisSize: MainAxisSize.min,
       children: [
-        buildButton(label: 'Today', view: MainView.today),
-        const SizedBox(width: 8),
-        buildButton(label: 'Planning', view: MainView.planning),
-        const SizedBox(width: 8),
-        buildButton(label: 'Projets', view: MainView.projects),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            buildButton(label: 'Today', view: MainView.today),
+            const SizedBox(width: 8),
+            buildButton(label: 'Planning', view: MainView.planning),
+            const SizedBox(width: 8),
+            buildButton(label: 'Projets', view: MainView.projects),
+          ],
+        ),
+        const SizedBox(width: 12),
+        Expanded(child: _buildHeaderPostIt()),
       ],
     );
   }
 
-  Widget _buildTaskTile(TaskItem task) {
-    return Material(
-      color: _taskDisplayColor(task),
-      borderRadius: BorderRadius.circular(14),
-      child: ListTile(
-        leading: IconButton(
-          onPressed: () => _cycleTaskStatus(task),
-          icon: Icon(
-            _statusIcon(task.status),
-            color: _statusColor(context, task.status),
+  Widget _buildHeaderPostIt() {
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.only(left: 10, right: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3BF),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE6D08A)),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.sticky_note_2_outlined,
+            size: 16,
+            color: Colors.black54,
           ),
-          tooltip: 'Changer le statut',
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: _headerPostItController,
+              maxLines: 1,
+              textInputAction: TextInputAction.done,
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: 'Post-it rapide... ',
+                border: InputBorder.none,
+                filled: false,
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+          ),
+          IconButton(
+            onPressed: _clearHeaderPostIt,
+            tooltip: 'Effacer',
+            icon: const Icon(Icons.close, size: 17, color: Colors.black54),
+            visualDensity: VisualDensity.compact,
+          ),
+          IconButton(
+            onPressed: _saveHeaderPostIt,
+            tooltip: 'Enregistrer dans un fichier',
+            icon: const Icon(
+              Icons.save_outlined,
+              size: 17,
+              color: Colors.black54,
+            ),
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTaskTile(TaskItem task) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border(
+          left: BorderSide(color: _taskMarkerColor(task), width: 2),
+          top: BorderSide(color: _taskMarkerColor(task), width: 1),
+          right: BorderSide(color: _taskMarkerColor(task), width: 1),
+          bottom: BorderSide(color: _taskMarkerColor(task), width: 1),
         ),
-        title: _buildTaskNameWithRecurrenceIcon(
-          task,
-          style: Theme.of(context).textTheme.titleMedium,
-        ),
-        trailing: IconButton(
-          onPressed: () => _openTaskEditor(task),
-          icon: const Icon(Icons.chevron_right),
-          tooltip: 'Éditer',
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        child: ListTile(
+          onTap: () => _openTaskEditor(task),
+          leading: IconButton(
+            onPressed: () => _cycleTaskStatus(task),
+            icon: Icon(_statusIcon(task.status), color: _taskMarkerColor(task)),
+            tooltip: 'Changer le statut',
+          ),
+          title: _buildTaskNameWithRecurrenceIcon(
+            task,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          trailing: IconButton(
+            onPressed: () => _deleteTask(task),
+            icon: const Icon(Icons.close),
+            tooltip: 'Supprimer',
+          ),
         ),
       ),
     );
@@ -2248,22 +2364,14 @@ class _TodayPageState extends State<TodayPage> {
                       style: Theme.of(context).textTheme.bodyLarge,
                     ),
                   )
-                : ReorderableListView.builder(
+                : ListView.builder(
                     itemCount: tasksForToday.length,
-                    onReorder: _reorderTodayTasks,
-                    buildDefaultDragHandles: false,
                     itemBuilder: (context, index) {
                       final task = tasksForToday[index];
                       return Padding(
                         key: ObjectKey(task),
                         padding: const EdgeInsets.only(bottom: 10),
-                        child: MouseRegion(
-                          cursor: SystemMouseCursors.grab,
-                          child: _buildPlatformDragListener(
-                            index: index,
-                            child: _buildTaskTile(task),
-                          ),
-                        ),
+                        child: _buildTaskTile(task),
                       );
                     },
                   ),
@@ -2310,10 +2418,8 @@ class _TodayPageState extends State<TodayPage> {
                             style: Theme.of(context).textTheme.bodyLarge,
                           ),
                         )
-                      : ReorderableListView.builder(
+                      : ListView.builder(
                           itemCount: _projects.length,
-                          onReorder: _reorderProjects,
-                          buildDefaultDragHandles: false,
                           itemBuilder: (context, index) {
                             final project = _projects[index];
                             final isSelected = _selectedProjectId == project.id;
@@ -2325,42 +2431,57 @@ class _TodayPageState extends State<TodayPage> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  MouseRegion(
-                                    cursor: SystemMouseCursors.grab,
-                                    child: _buildPlatformDragListener(
-                                      index: index,
-                                      child: Material(
-                                        color: project.color.color,
-                                        borderRadius: BorderRadius.circular(14),
-                                        child: ListTile(
-                                          selected: isSelected,
-                                          leading: IconButton(
-                                            onPressed: () =>
-                                                _cycleProjectStatus(project),
-                                            icon: Icon(
-                                              _statusIcon(project.status),
-                                              color: _statusColor(
-                                                context,
-                                                project.status,
-                                              ),
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(14),
+                                      border: Border(
+                                        left: BorderSide(
+                                          color: project.color.color,
+                                          width: 2,
+                                        ),
+                                        top: BorderSide(
+                                          color: project.color.color,
+                                          width: 1,
+                                        ),
+                                        right: BorderSide(
+                                          color: project.color.color,
+                                          width: 1,
+                                        ),
+                                        bottom: BorderSide(
+                                          color: project.color.color,
+                                          width: 1,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Material(
+                                      color: Colors.transparent,
+                                      borderRadius: BorderRadius.circular(14),
+                                      child: ListTile(
+                                        selected: isSelected,
+                                        leading: IconButton(
+                                          onPressed: () =>
+                                              _cycleProjectStatus(project),
+                                          icon: Icon(
+                                            _statusIcon(project.status),
+                                            color: _statusColor(
+                                              context,
+                                              project.status,
                                             ),
-                                            tooltip: 'Changer le statut',
                                           ),
-                                          title: Text(project.name),
-                                          subtitle: Text(project.status),
-                                          onTap: () {
-                                            setState(() {
-                                              _selectedProjectId = project.id;
-                                            });
-                                          },
-                                          trailing: IconButton(
-                                            onPressed: () =>
-                                                _openProjectEditor(project),
-                                            icon: const Icon(
-                                              Icons.chevron_right,
-                                            ),
-                                            tooltip: 'Éditer le projet',
-                                          ),
+                                          tooltip: 'Changer le statut',
+                                        ),
+                                        title: Text(project.name),
+                                        onTap: () {
+                                          setState(() {
+                                            _selectedProjectId = project.id;
+                                          });
+                                        },
+                                        trailing: IconButton(
+                                          onPressed: () =>
+                                              _deleteProject(project),
+                                          icon: const Icon(Icons.close),
+                                          tooltip: 'Supprimer',
                                         ),
                                       ),
                                     ),
@@ -2407,41 +2528,26 @@ class _TodayPageState extends State<TodayPage> {
                                               ),
                                             )
                                           else
-                                            ReorderableListView.builder(
+                                            ListView.builder(
                                               shrinkWrap: true,
                                               physics:
                                                   const NeverScrollableScrollPhysics(),
-                                              buildDefaultDragHandles: false,
                                               itemCount: projectTasks.length,
-                                              onReorder: (oldIndex, newIndex) {
-                                                _reorderProjectTasks(
-                                                  project,
-                                                  oldIndex,
-                                                  newIndex,
-                                                );
-                                              },
-                                              itemBuilder: (context, taskIndex) {
-                                                final task =
-                                                    projectTasks[taskIndex];
-                                                return Padding(
-                                                  key: ObjectKey(task),
-                                                  padding:
-                                                      const EdgeInsets.only(
-                                                        bottom: 10,
-                                                      ),
-                                                  child: MouseRegion(
-                                                    cursor:
-                                                        SystemMouseCursors.grab,
-                                                    child:
-                                                        _buildPlatformDragListener(
-                                                          index: taskIndex,
-                                                          child: _buildTaskTile(
-                                                            task,
+                                              itemBuilder:
+                                                  (context, taskIndex) {
+                                                    final task =
+                                                        projectTasks[taskIndex];
+                                                    return Padding(
+                                                      key: ObjectKey(task),
+                                                      padding:
+                                                          const EdgeInsets.only(
+                                                            bottom: 10,
                                                           ),
-                                                        ),
-                                                  ),
-                                                );
-                                              },
+                                                      child: _buildTaskTile(
+                                                        task,
+                                                      ),
+                                                    );
+                                                  },
                                             ),
                                         ],
                                       ),
@@ -2487,10 +2593,8 @@ class _TodayPageState extends State<TodayPage> {
                                 style: Theme.of(context).textTheme.bodyLarge,
                               ),
                             )
-                          : ReorderableListView.builder(
+                          : ListView.builder(
                               itemCount: _projects.length,
-                              onReorder: _reorderProjects,
-                              buildDefaultDragHandles: false,
                               itemBuilder: (context, index) {
                                 final project = _projects[index];
                                 return Padding(
@@ -2498,43 +2602,58 @@ class _TodayPageState extends State<TodayPage> {
                                     'desktop-project-${project.id}',
                                   ),
                                   padding: const EdgeInsets.only(bottom: 10),
-                                  child: MouseRegion(
-                                    cursor: SystemMouseCursors.grab,
-                                    child: _buildPlatformDragListener(
-                                      index: index,
-                                      child: Material(
-                                        color: project.color.color,
-                                        borderRadius: BorderRadius.circular(14),
-                                        child: ListTile(
-                                          selected:
-                                              _selectedProjectId == project.id,
-                                          leading: IconButton(
-                                            onPressed: () =>
-                                                _cycleProjectStatus(project),
-                                            icon: Icon(
-                                              _statusIcon(project.status),
-                                              color: _statusColor(
-                                                context,
-                                                project.status,
-                                              ),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(14),
+                                      border: Border(
+                                        left: BorderSide(
+                                          color: project.color.color,
+                                          width: 2,
+                                        ),
+                                        top: BorderSide(
+                                          color: project.color.color,
+                                          width: 1,
+                                        ),
+                                        right: BorderSide(
+                                          color: project.color.color,
+                                          width: 1,
+                                        ),
+                                        bottom: BorderSide(
+                                          color: project.color.color,
+                                          width: 1,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Material(
+                                      color: Colors.transparent,
+                                      borderRadius: BorderRadius.circular(14),
+                                      child: ListTile(
+                                        selected:
+                                            _selectedProjectId == project.id,
+                                        leading: IconButton(
+                                          onPressed: () =>
+                                              _cycleProjectStatus(project),
+                                          icon: Icon(
+                                            _statusIcon(project.status),
+                                            color: _statusColor(
+                                              context,
+                                              project.status,
                                             ),
-                                            tooltip: 'Changer le statut',
                                           ),
-                                          title: Text(project.name),
-                                          subtitle: Text(project.status),
-                                          onTap: () {
-                                            setState(() {
-                                              _selectedProjectId = project.id;
-                                            });
-                                          },
-                                          trailing: IconButton(
-                                            onPressed: () =>
-                                                _openProjectEditor(project),
-                                            icon: const Icon(
-                                              Icons.chevron_right,
-                                            ),
-                                            tooltip: 'Éditer le projet',
-                                          ),
+                                          tooltip: 'Changer le statut',
+                                        ),
+                                        title: Text(project.name),
+                                        onTap: () {
+                                          setState(() {
+                                            _selectedProjectId = project.id;
+                                          });
+                                        },
+                                        trailing: IconButton(
+                                          onPressed: () =>
+                                              _deleteProject(project),
+                                          icon: const Icon(Icons.close),
+                                          tooltip: 'Supprimer',
                                         ),
                                       ),
                                     ),
@@ -2597,16 +2716,8 @@ class _TodayPageState extends State<TodayPage> {
                                         ).textTheme.bodyLarge,
                                       ),
                                     )
-                                  : ReorderableListView.builder(
+                                  : ListView.builder(
                                       itemCount: tasks.length,
-                                      onReorder: (oldIndex, newIndex) {
-                                        _reorderProjectTasks(
-                                          selectedProject,
-                                          oldIndex,
-                                          newIndex,
-                                        );
-                                      },
-                                      buildDefaultDragHandles: false,
                                       itemBuilder: (context, index) {
                                         final task = tasks[index];
                                         return Padding(
@@ -2614,13 +2725,7 @@ class _TodayPageState extends State<TodayPage> {
                                           padding: const EdgeInsets.only(
                                             bottom: 10,
                                           ),
-                                          child: MouseRegion(
-                                            cursor: SystemMouseCursors.grab,
-                                            child: _buildPlatformDragListener(
-                                              index: index,
-                                              child: _buildTaskTile(task),
-                                            ),
-                                          ),
+                                          child: _buildTaskTile(task),
                                         );
                                       },
                                     ),
@@ -2918,11 +3023,35 @@ class _TodayPageState extends State<TodayPage> {
                                         child: Container(
                                           padding: const EdgeInsets.all(8),
                                           decoration: BoxDecoration(
-                                            color: _taskDisplayColor(
-                                              layout.task,
-                                            ),
+                                            color: Colors.white,
                                             borderRadius: BorderRadius.circular(
                                               10,
+                                            ),
+                                            border: Border(
+                                              left: BorderSide(
+                                                color: _taskMarkerColor(
+                                                  layout.task,
+                                                ),
+                                                width: 1,
+                                              ),
+                                              top: BorderSide(
+                                                color: _taskMarkerColor(
+                                                  layout.task,
+                                                ),
+                                                width: 1,
+                                              ),
+                                              right: BorderSide(
+                                                color: _taskMarkerColor(
+                                                  layout.task,
+                                                ),
+                                                width: 1,
+                                              ),
+                                              bottom: BorderSide(
+                                                color: _taskMarkerColor(
+                                                  layout.task,
+                                                ),
+                                                width: 1,
+                                              ),
                                             ),
                                           ),
                                           child: Column(
@@ -3027,12 +3156,6 @@ class _TodayPageState extends State<TodayPage> {
                                 task,
                                 style: Theme.of(context).textTheme.titleSmall,
                               ),
-                              subtitle: Text(
-                                task.project.isEmpty
-                                    ? 'Sans projet'
-                                    : task.project,
-                              ),
-                              trailing: const Icon(Icons.chevron_right),
                               onTap: () => _openTaskEditor(task),
                             ),
                         ],
@@ -3120,14 +3243,34 @@ class _TodayPageState extends State<TodayPage> {
                                         vertical: 6,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: _taskDisplayColor(task),
+                                        color: Colors.white,
                                         borderRadius: BorderRadius.circular(8),
+                                        border: Border(
+                                          left: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          top: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          right: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          bottom: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                        ),
                                       ),
                                       child: Text(
-                                        _timeRangeLabel(task),
+                                        '${_timeRangeLabel(task)}  ${task.name}',
                                         style: Theme.of(
                                           context,
                                         ).textTheme.bodySmall,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                     ),
                                   ),
@@ -3144,8 +3287,26 @@ class _TodayPageState extends State<TodayPage> {
                                         vertical: 6,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: _taskDisplayColor(task),
+                                        color: Colors.white,
                                         borderRadius: BorderRadius.circular(8),
+                                        border: Border(
+                                          left: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          top: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          right: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          bottom: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                        ),
                                       ),
                                       child: Column(
                                         crossAxisAlignment:
@@ -3153,13 +3314,6 @@ class _TodayPageState extends State<TodayPage> {
                                         children: [
                                           _buildTaskNameWithRecurrenceIcon(
                                             task,
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.bodySmall,
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            'Sans horaire',
                                             style: Theme.of(
                                               context,
                                             ).textTheme.bodySmall,
@@ -3262,22 +3416,40 @@ class _TodayPageState extends State<TodayPage> {
                                         vertical: 2,
                                       ),
                                       decoration: BoxDecoration(
-                                        color: _taskDisplayColor(task),
+                                        color: Colors.white,
                                         borderRadius: BorderRadius.circular(6),
+                                        border: Border(
+                                          left: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          top: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          right: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                          bottom: BorderSide(
+                                            color: _taskMarkerColor(task),
+                                            width: 1,
+                                          ),
+                                        ),
                                       ),
                                       child: Row(
                                         children: [
-                                          Text(
-                                            task.startTime == null
-                                                ? 'Journee'
-                                                : '${_twoDigits(task.startTime?.hour ?? 0)}:${_twoDigits(task.startTime?.minute ?? 0)}',
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.bodySmall,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          const SizedBox(width: 4),
+                                          if (task.startTime != null) ...[
+                                            Text(
+                                              '${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            const SizedBox(width: 4),
+                                          ],
                                           if (_isRecurringTask(task)) ...[
                                             const Icon(
                                               Icons.repeat_rounded,
