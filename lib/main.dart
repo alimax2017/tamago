@@ -40,9 +40,9 @@ class TamagoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const pastelBackground = Color(0xFFFDF8F5);
-    const pastelPrimary = Color(0xFF9EB7FF);
-    const pastelSecondary = Color(0xFFFFE6B8);
+    const pastelBackground = Color(0xFFFFF4F9);
+    const pastelPrimary = Color(0xFFE8A8C9);
+    const pastelSecondary = Color(0xFFFFC9DE);
 
     return MaterialApp(
       title: 'Tamago Tasks',
@@ -79,12 +79,12 @@ enum MainView { today, planning, projects }
 enum PlanningScope { day, week, month }
 
 enum TaskColorOption {
-  jaune('Jaune', Color(0xFFFFE082)),
-  rouge('Rouge', Color(0xFFFFABAB)),
-  vert('Vert', Color(0xFFA8E6A2)),
-  bleu('Bleu', Color(0xFFA9D6FF)),
-  gris('Gris', Color(0xFFD6D8DC)),
-  violet('Violet', Color(0xFFD8B4FE));
+  jaune('Jaune', Color(0xFFFFE79A)),
+  rouge('Rose corail', Color(0xFFFFB3C7)),
+  vert('Vert menthe', Color(0xFFBDECC8)),
+  bleu('Lilas', Color(0xFFC9C4FF)),
+  gris('Gris lavande', Color(0xFFE2DDEA)),
+  violet('Violet', Color(0xFFE3B7FF));
 
   const TaskColorOption(this.label, this.color);
   final String label;
@@ -92,12 +92,12 @@ enum TaskColorOption {
 }
 
 enum ProjectColorOption {
-  jaune('Jaune', Color(0xFFFFE082)),
-  vert('Vert', Color(0xFFA8E6A2)),
-  rouge('Rouge', Color(0xFFFFABAB)),
-  bleu('Bleu', Color(0xFFA9D6FF)),
-  gris('Gris', Color(0xFFD6D8DC)),
-  marron('Marron', Color(0xFFD7B899));
+  jaune('Jaune', Color(0xFFFFE79A)),
+  vert('Vert menthe', Color(0xFFBDECC8)),
+  rouge('Rose corail', Color(0xFFFFB3C7)),
+  bleu('Lilas', Color(0xFFC9C4FF)),
+  gris('Gris lavande', Color(0xFFE2DDEA)),
+  marron('Pêche', Color(0xFFF1C9A6));
 
   const ProjectColorOption(this.label, this.color);
   final String label;
@@ -315,6 +315,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   final TextEditingController _quickAddProjectTaskController =
       TextEditingController();
   final TextEditingController _headerPostItController = TextEditingController();
+  final ScrollController _planningDayScrollController = ScrollController();
 
   final List<TaskItem> _tasks = [];
   final List<ProjectItem> _projects = [];
@@ -327,6 +328,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   MainView _currentView = MainView.today;
   PlanningScope _planningScope = PlanningScope.day;
   DateTime _planningAnchorDate = DateTime.now();
+  DateTime? _lastAutoScrolledPlanningDay;
   String? _selectedProjectId;
 
   @override
@@ -352,6 +354,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     _quickAddProjectController.dispose();
     _quickAddProjectTaskController.dispose();
     _headerPostItController.dispose();
+    _planningDayScrollController.dispose();
     super.dispose();
   }
 
@@ -712,20 +715,16 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     }
   }
 
-  Color _statusColor(BuildContext context, String status) {
-    final colorScheme = Theme.of(context).colorScheme;
-    switch (status) {
-      case 'En cours':
-        return colorScheme.primary;
-      case 'Terminé':
-        return colorScheme.secondary;
-      default:
-        return colorScheme.outline;
-    }
+  List<TaskItem> get _todayTasks {
+    return _tasksForDate(
+      _todayOnly,
+    ).where((task) => task.status != 'Terminé').toList();
   }
 
-  List<TaskItem> get _todayTasks {
-    return _tasksForDate(_todayOnly);
+  List<TaskItem> _completedTasksForDate(DateTime date) {
+    return _tasksForDate(
+      date,
+    ).where((task) => task.status == 'Terminé').toList();
   }
 
   ProjectItem? get _selectedProject {
@@ -2325,11 +2324,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             task,
             style: Theme.of(context).textTheme.titleMedium,
           ),
-          trailing: IconButton(
-            onPressed: () => _deleteTask(task),
-            icon: const Icon(Icons.close),
-            tooltip: 'Supprimer',
-          ),
         ),
       ),
     );
@@ -2464,10 +2458,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                               _cycleProjectStatus(project),
                                           icon: Icon(
                                             _statusIcon(project.status),
-                                            color: _statusColor(
-                                              context,
-                                              project.status,
-                                            ),
+                                            color: project.color.color,
                                           ),
                                           tooltip: 'Changer le statut',
                                         ),
@@ -2477,12 +2468,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             _selectedProjectId = project.id;
                                           });
                                         },
-                                        trailing: IconButton(
-                                          onPressed: () =>
-                                              _deleteProject(project),
-                                          icon: const Icon(Icons.close),
-                                          tooltip: 'Supprimer',
-                                        ),
                                       ),
                                     ),
                                   ),
@@ -2636,10 +2621,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                               _cycleProjectStatus(project),
                                           icon: Icon(
                                             _statusIcon(project.status),
-                                            color: _statusColor(
-                                              context,
-                                              project.status,
-                                            ),
+                                            color: project.color.color,
                                           ),
                                           tooltip: 'Changer le statut',
                                         ),
@@ -2649,12 +2631,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             _selectedProjectId = project.id;
                                           });
                                         },
-                                        trailing: IconButton(
-                                          onPressed: () =>
-                                              _deleteProject(project),
-                                          icon: const Icon(Icons.close),
-                                          tooltip: 'Supprimer',
-                                        ),
                                       ),
                                     ),
                                   ),
@@ -2765,6 +2741,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             setState(() {
               _planningScope = PlanningScope.day;
               _planningAnchorDate = _todayOnly;
+              _lastAutoScrolledPlanningDay = null;
             });
           },
         ),
@@ -2793,15 +2770,19 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   Widget _buildPlanningDayView(DateTime date) {
     final day = _dateOnly(date);
     final isTodayView = _isSameDay(day, _todayOnly);
-    final timedTasks = _tasksForDate(day, timedOnly: true)
-      ..removeWhere((task) {
-        if (task.startTime == null || task.endTime == null) {
-          return true;
-        }
-        final start = task.startTime!.hour * 60 + task.startTime!.minute;
-        final end = task.endTime!.hour * 60 + task.endTime!.minute;
-        return end <= start;
-      });
+    final dayTasks = isTodayView ? _todayTasks : _tasksForDate(day);
+    final timedTasks =
+        dayTasks
+            .where((task) => task.startTime != null && task.endTime != null)
+            .toList()
+          ..removeWhere((task) {
+            if (task.startTime == null || task.endTime == null) {
+              return true;
+            }
+            final start = task.startTime!.hour * 60 + task.startTime!.minute;
+            final end = task.endTime!.hour * 60 + task.endTime!.minute;
+            return end <= start;
+          });
 
     final timedLayouts = <_PlanningTaskLayout>[];
     if (timedTasks.isNotEmpty) {
@@ -2897,11 +2878,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
-    final unscheduled = _tasksForDate(
-      day,
-    ).where((task) => task.startTime == null || task.endTime == null).toList();
+    final unscheduled = dayTasks
+        .where((task) => task.startTime == null || task.endTime == null)
+        .toList();
 
-    final firstStart = timedTasks.isEmpty
+    final nowMinutes = _liveNow.hour * 60 + _liveNow.minute;
+
+    var firstStart = timedTasks.isEmpty
         ? 8 * 60
         : timedTasks
                   .map(
@@ -2910,12 +2893,23 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   )
                   .reduce((a, b) => a < b ? a : b) -
               30;
-    final lastEnd = timedTasks.isEmpty
+    var lastEnd = timedTasks.isEmpty
         ? 18 * 60
         : timedTasks
                   .map((task) => task.endTime!.hour * 60 + task.endTime!.minute)
                   .reduce((a, b) => a > b ? a : b) +
               30;
+
+    if (isTodayView) {
+      final nowWindowStart = nowMinutes - 90;
+      final nowWindowEnd = nowMinutes + 90;
+      if (nowWindowStart < firstStart) {
+        firstStart = nowWindowStart;
+      }
+      if (nowWindowEnd > lastEnd) {
+        lastEnd = nowWindowEnd;
+      }
+    }
 
     final minMinutes = firstStart.clamp(0, 23 * 60);
     final maxMinutes = lastEnd.clamp(minMinutes + 60, 24 * 60);
@@ -2924,246 +2918,237 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final endHour = (maxMinutes / 60).ceil();
     const hourHeight = 72.0;
     final totalHeight = (endHour - startHour) * hourHeight;
-    final nowMinutes = _liveNow.hour * 60 + _liveNow.minute;
     final showsNowIndicator =
         isTodayView && nowMinutes >= minMinutes && nowMinutes <= maxMinutes;
     final nowTop = ((nowMinutes / 60) - startHour) * hourHeight;
 
+    if (isTodayView && _lastAutoScrolledPlanningDay == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_planningDayScrollController.hasClients) {
+          return;
+        }
+        final targetOffset = (nowTop - 180).clamp(
+          0.0,
+          _planningDayScrollController.position.maxScrollExtent,
+        );
+        _planningDayScrollController.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+        );
+      });
+      _lastAutoScrolledPlanningDay = day;
+    }
+
     return Expanded(
-      child: timedTasks.isEmpty && unscheduled.isEmpty
-          ? Center(
-              child: Text(
-                'Aucune tache planifiee pour cette journee.',
-                style: Theme.of(context).textTheme.bodyLarge,
+      child: SingleChildScrollView(
+        controller: _planningDayScrollController,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              height: totalHeight,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
               ),
-            )
-          : SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (timedTasks.isNotEmpty)
-                    Container(
-                      height: totalHeight,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          const gutterLeft = 70.0;
-                          const gutterRight = 10.0;
-                          const taskGap = 4.0;
-                          final laneWidth =
-                              constraints.maxWidth - gutterLeft - gutterRight;
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  const gutterLeft = 70.0;
+                  const gutterRight = 10.0;
+                  const taskGap = 4.0;
+                  final laneWidth =
+                      constraints.maxWidth - gutterLeft - gutterRight;
 
-                          return Stack(
-                            children: [
-                              for (
-                                var hour = startHour;
-                                hour <= endHour;
-                                hour++
-                              )
-                                Positioned(
-                                  left: 0,
-                                  right: 0,
-                                  top: (hour - startHour) * hourHeight,
-                                  child: SizedBox(
-                                    height: 1,
-                                    child: DecoratedBox(
-                                      decoration: BoxDecoration(
-                                        color: Colors.black12,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              for (var hour = startHour; hour < endHour; hour++)
-                                Positioned(
-                                  top: (hour - startHour) * hourHeight - 10,
-                                  left: 8,
-                                  child: Text(
-                                    '${_twoDigits(hour)}:00',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.bodySmall,
-                                  ),
-                                ),
-                              for (final layout in timedLayouts)
-                                Builder(
-                                  builder: (context) {
-                                    final top =
-                                        ((layout.startMinutes / 60) -
-                                            startHour) *
-                                        hourHeight;
-                                    final height =
-                                        ((layout.endMinutes -
-                                                layout.startMinutes) /
-                                            60) *
-                                        hourHeight;
-                                    final columnWidth =
-                                        laneWidth / layout.totalColumns;
-                                    final left =
-                                        gutterLeft +
-                                        (layout.column * columnWidth) +
-                                        (taskGap / 2);
-                                    final spanWidth =
-                                        (columnWidth * layout.columnSpan) -
-                                        taskGap;
-                                    final width = spanWidth > 36
-                                        ? spanWidth
-                                        : 36.0;
-
-                                    return Positioned(
-                                      left: left,
-                                      width: width,
-                                      top: top,
-                                      height: height < 34 ? 34 : height,
-                                      child: GestureDetector(
-                                        onTap: () =>
-                                            _openTaskEditor(layout.task),
-                                        child: Container(
-                                          padding: const EdgeInsets.all(8),
-                                          decoration: BoxDecoration(
-                                            color: Colors.white,
-                                            borderRadius: BorderRadius.circular(
-                                              10,
-                                            ),
-                                            border: Border(
-                                              left: BorderSide(
-                                                color: _taskMarkerColor(
-                                                  layout.task,
-                                                ),
-                                                width: 1,
-                                              ),
-                                              top: BorderSide(
-                                                color: _taskMarkerColor(
-                                                  layout.task,
-                                                ),
-                                                width: 1,
-                                              ),
-                                              right: BorderSide(
-                                                color: _taskMarkerColor(
-                                                  layout.task,
-                                                ),
-                                                width: 1,
-                                              ),
-                                              bottom: BorderSide(
-                                                color: _taskMarkerColor(
-                                                  layout.task,
-                                                ),
-                                                width: 1,
-                                              ),
-                                            ),
-                                          ),
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              _buildTaskNameWithRecurrenceIcon(
-                                                layout.task,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                              ),
-                                              const SizedBox(height: 2),
-                                              Text(
-                                                _timeRangeLabel(layout.task),
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              if (showsNowIndicator)
-                                Positioned(
-                                  left: 0,
-                                  right: 0,
-                                  top: nowTop,
-                                  child: IgnorePointer(
-                                    child: Row(
-                                      children: [
-                                        const SizedBox(width: 58),
-                                        Container(
-                                          width: 10,
-                                          height: 10,
-                                          decoration: const BoxDecoration(
-                                            color: Color(0xFFE53935),
-                                            shape: BoxShape.circle,
-                                          ),
-                                        ),
-                                        Expanded(
-                                          child: Container(
-                                            height: 2,
-                                            color: const Color(0xFFE53935),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 6,
-                                            vertical: 2,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFFE53935),
-                                            borderRadius: BorderRadius.circular(
-                                              99,
-                                            ),
-                                          ),
-                                          child: Text(
-                                            '${_twoDigits(_liveNow.hour)}:${_twoDigits(_liveNow.minute)}',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(color: Colors.white),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-                    ),
-                  if (unscheduled.isNotEmpty) const SizedBox(height: 14),
-                  if (unscheduled.isNotEmpty)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Sans horaire',
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          const SizedBox(height: 8),
-                          for (final task in unscheduled)
-                            ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              title: _buildTaskNameWithRecurrenceIcon(
-                                task,
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                              onTap: () => _openTaskEditor(task),
+                  return Stack(
+                    children: [
+                      for (var hour = startHour; hour <= endHour; hour++)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: (hour - startHour) * hourHeight,
+                          child: SizedBox(
+                            height: 1,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(color: Colors.black12),
                             ),
-                        ],
-                      ),
-                    ),
-                ],
+                          ),
+                        ),
+                      for (var hour = startHour; hour < endHour; hour++)
+                        Positioned(
+                          top: (hour - startHour) * hourHeight - 10,
+                          left: 8,
+                          child: Text(
+                            '${_twoDigits(hour)}:00',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      for (final layout in timedLayouts)
+                        Builder(
+                          builder: (context) {
+                            final top =
+                                ((layout.startMinutes / 60) - startHour) *
+                                hourHeight;
+                            final height =
+                                ((layout.endMinutes - layout.startMinutes) /
+                                    60) *
+                                hourHeight;
+                            final columnWidth = laneWidth / layout.totalColumns;
+                            final left =
+                                gutterLeft +
+                                (layout.column * columnWidth) +
+                                (taskGap / 2);
+                            final spanWidth =
+                                (columnWidth * layout.columnSpan) - taskGap;
+                            final width = spanWidth > 36 ? spanWidth : 36.0;
+
+                            return Positioned(
+                              left: left,
+                              width: width,
+                              top: top,
+                              height: height < 34 ? 34 : height,
+                              child: GestureDetector(
+                                onTap: () => _openTaskEditor(layout.task),
+                                child: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border(
+                                      left: BorderSide(
+                                        color: _taskMarkerColor(layout.task),
+                                        width: 1,
+                                      ),
+                                      top: BorderSide(
+                                        color: _taskMarkerColor(layout.task),
+                                        width: 1,
+                                      ),
+                                      right: BorderSide(
+                                        color: _taskMarkerColor(layout.task),
+                                        width: 1,
+                                      ),
+                                      bottom: BorderSide(
+                                        color: _taskMarkerColor(layout.task),
+                                        width: 1,
+                                      ),
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      _buildTaskNameWithRecurrenceIcon(
+                                        layout.task,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        _timeRangeLabel(layout.task),
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      if (showsNowIndicator)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: nowTop,
+                          child: IgnorePointer(
+                            child: Row(
+                              children: [
+                                const SizedBox(width: 58),
+                                Container(
+                                  width: 10,
+                                  height: 10,
+                                  decoration: const BoxDecoration(
+                                    color: Color(0xFFE53935),
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Container(
+                                    height: 2,
+                                    color: const Color(0xFFE53935),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFE53935),
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                  child: Text(
+                                    '${_twoDigits(_liveNow.hour)}:${_twoDigits(_liveNow.minute)}',
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(color: Colors.white),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
             ),
+            if (timedTasks.isEmpty && unscheduled.isEmpty) ...[
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  'Aucune tache planifiee pour cette journee.',
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+              ),
+            ],
+            if (unscheduled.isNotEmpty) const SizedBox(height: 14),
+            if (unscheduled.isNotEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Sans horaire',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    for (final task in unscheduled)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: _buildTaskNameWithRecurrenceIcon(
+                          task,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        onTap: () => _openTaskEditor(task),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -3189,7 +3174,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             itemCount: days.length,
             itemBuilder: (context, index) {
               final day = days[index];
-              final tasks = _tasksForDate(day);
+              final tasks = _completedTasksForDate(day);
               final timedTasks = tasks
                   .where(
                     (task) => task.startTime != null && task.endTime != null,
@@ -3264,13 +3249,36 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           ),
                                         ),
                                       ),
-                                      child: Text(
-                                        '${_timeRangeLabel(task)}  ${task.name}',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
+                                      child: Row(
+                                        children: [
+                                          Text(
+                                            _timeRangeLabel(task),
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          if (_isRecurringTask(task)) ...[
+                                            const Icon(
+                                              Icons.repeat_rounded,
+                                              size: 12,
+                                              color: Colors.black87,
+                                            ),
+                                            const SizedBox(width: 2),
+                                          ],
+                                          Expanded(
+                                            child: Text(
+                                              task.name,
+                                              style: Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ),
@@ -3373,7 +3381,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               ),
               itemBuilder: (context, index) {
                 final day = days[index];
-                final tasks = _tasksForDate(day);
+                final tasks = _completedTasksForDate(day);
                 final inCurrentMonth = day.month == anchorDate.month;
                 final isToday = _isSameDay(day, _todayOnly);
 
@@ -3531,6 +3539,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 onPressed: () {
                   setState(() {
                     _planningAnchorDate = previousAnchor();
+                    if (_planningScope == PlanningScope.day) {
+                      _lastAutoScrolledPlanningDay = null;
+                    }
                   });
                 },
                 icon: const Icon(Icons.chevron_left),
@@ -3547,6 +3558,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 onPressed: () {
                   setState(() {
                     _planningAnchorDate = nextAnchor();
+                    if (_planningScope == PlanningScope.day) {
+                      _lastAutoScrolledPlanningDay = null;
+                    }
                   });
                 },
                 icon: const Icon(Icons.chevron_right),
