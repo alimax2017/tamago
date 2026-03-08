@@ -76,7 +76,7 @@ class TamagoApp extends StatelessWidget {
 
 enum MainView { today, planning, projects }
 
-enum PlanningScope { day, week, month }
+enum _TodayPane { tasks, timeline }
 
 enum TaskColorOption {
   jaune('Jaune', Color(0xFFFFE79A)),
@@ -303,6 +303,7 @@ class TodayPage extends StatefulWidget {
 class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   static const _tasksStorageKey = 'tamago_tasks_v1';
   static const _projectsStorageKey = 'tamago_projects_v1';
+  static const _weekNotesStorageKey = 'tamago_week_notes_v1';
   static const List<String> _reminderOptions = <String>[
     '1 jour avant',
     '1h avant',
@@ -315,6 +316,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   final TextEditingController _quickAddProjectTaskController =
       TextEditingController();
   final TextEditingController _headerPostItController = TextEditingController();
+  final TextEditingController _weekNotesController = TextEditingController();
   final ScrollController _planningDayScrollController = ScrollController();
 
   final List<TaskItem> _tasks = [];
@@ -324,12 +326,17 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   final Map<String, _ReminderNotice> _activeReminders =
       <String, _ReminderNotice>{};
   final Set<String> _dismissedReminderIds = <String>{};
+  final Map<String, String> _weekNotesByWeekKey = <String, String>{};
 
   MainView _currentView = MainView.today;
-  PlanningScope _planningScope = PlanningScope.day;
   DateTime _planningAnchorDate = DateTime.now();
   DateTime? _lastAutoScrolledPlanningDay;
   String? _selectedProjectId;
+  bool _todayTasksPaneCollapsed = false;
+  bool _todayTimelinePaneCollapsed = false;
+  _TodayPane? _todayExpandedPane;
+  String _activeWeekNotesKey = '';
+  bool _isSyncingWeekNotesController = false;
 
   @override
   void initState() {
@@ -343,6 +350,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     );
     _loadData();
     _loadHeaderPostIt();
+    _loadWeekNotes();
   }
 
   @override
@@ -354,6 +362,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     _quickAddProjectController.dispose();
     _quickAddProjectTaskController.dispose();
     _headerPostItController.dispose();
+    _weekNotesController.dispose();
     _planningDayScrollController.dispose();
     super.dispose();
   }
@@ -608,39 +617,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     );
   }
 
-  List<DateTime> _monthGridDays(DateTime monthDate) {
-    final firstDay = DateTime(monthDate.year, monthDate.month, 1);
-    final start = _startOfWeek(firstDay);
-    final lastDay = DateTime(monthDate.year, monthDate.month + 1, 0);
-    final end = _startOfWeek(lastDay).add(const Duration(days: 6));
-    final totalDays = end.difference(start).inDays + 1;
-    return List<DateTime>.generate(
-      totalDays,
-      (index) => start.add(Duration(days: index)),
-    );
-  }
-
   String _dayLabel(DateTime date) {
     const labels = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
     return labels[date.weekday - 1];
-  }
-
-  String _monthLabel(DateTime date) {
-    const months = [
-      'Janvier',
-      'Fevrier',
-      'Mars',
-      'Avril',
-      'Mai',
-      'Juin',
-      'Juillet',
-      'Aout',
-      'Septembre',
-      'Octobre',
-      'Novembre',
-      'Decembre',
-    ];
-    return '${months[date.month - 1]} ${date.year}';
   }
 
   String _twoDigits(int value) {
@@ -663,9 +642,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     TextStyle? style,
     int maxLines = 1,
   }) {
-    final titleText = task.project.trim().isEmpty
-        ? task.name
-        : '${task.name} • ${task.project.trim()}';
+    final titleText = task.name;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -832,6 +809,48 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     _saveTasks();
   }
 
+  void _toggleTodayPaneCollapse(_TodayPane pane) {
+    setState(() {
+      if (pane == _TodayPane.tasks) {
+        final next = !_todayTasksPaneCollapsed;
+        _todayTasksPaneCollapsed = next;
+        if (next && _todayExpandedPane == _TodayPane.tasks) {
+          _todayExpandedPane = null;
+        }
+      } else {
+        final next = !_todayTimelinePaneCollapsed;
+        _todayTimelinePaneCollapsed = next;
+        if (next && _todayExpandedPane == _TodayPane.timeline) {
+          _todayExpandedPane = null;
+        }
+      }
+
+      // Keep at least one panel open in Today view.
+      if (_todayTasksPaneCollapsed && _todayTimelinePaneCollapsed) {
+        if (pane == _TodayPane.tasks) {
+          _todayTimelinePaneCollapsed = false;
+        } else {
+          _todayTasksPaneCollapsed = false;
+        }
+      }
+    });
+  }
+
+  void _toggleTodayPaneExpand(_TodayPane pane) {
+    setState(() {
+      if (_todayExpandedPane == pane) {
+        _todayExpandedPane = null;
+        return;
+      }
+      _todayExpandedPane = pane;
+      if (pane == _TodayPane.tasks) {
+        _todayTasksPaneCollapsed = false;
+      } else {
+        _todayTimelinePaneCollapsed = false;
+      }
+    });
+  }
+
   void _addProjectFromPrompt() {
     final projectName = _quickAddProjectController.text.trim();
     if (projectName.isEmpty) {
@@ -877,6 +896,12 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       _quickAddProjectTaskController.clear();
     });
     _saveTasks();
+  }
+
+  void _selectProjectTasksPanel(ProjectItem project) {
+    setState(() {
+      _selectedProjectId = project.id;
+    });
   }
 
   Future<void> _loadData() async {
@@ -954,6 +979,82 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     final payload = _projects.map((project) => project.toJson()).toList();
     await prefs.setString(_projectsStorageKey, jsonEncode(payload));
+  }
+
+  Future<void> _loadWeekNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+    final rawNotes = prefs.getString(_weekNotesStorageKey) ?? '';
+    final loaded = <String, String>{};
+
+    if (rawNotes.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawNotes) as Map<String, dynamic>;
+        for (final entry in decoded.entries) {
+          final value = entry.value;
+          if (value is String) {
+            loaded[entry.key] = value;
+          }
+        }
+      } catch (_) {
+        // Legacy format fallback: map existing note to the current anchor week.
+        loaded[_weekNotesKeyForDate(_planningAnchorDate)] = rawNotes;
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _weekNotesByWeekKey
+        ..clear()
+        ..addAll(loaded);
+    });
+    _syncWeekNotesControllerForDate(_planningAnchorDate);
+  }
+
+  Future<void> _saveWeekNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _weekNotesStorageKey,
+      jsonEncode(_weekNotesByWeekKey),
+    );
+  }
+
+  String _weekNotesKeyForDate(DateTime date) {
+    final weekStart = _startOfWeek(_dateOnly(date));
+    return '${weekStart.year}-${_twoDigits(weekStart.month)}-${_twoDigits(weekStart.day)}';
+  }
+
+  void _syncWeekNotesControllerForDate(DateTime date) {
+    final nextKey = _weekNotesKeyForDate(date);
+    _activeWeekNotesKey = nextKey;
+    final nextText = _weekNotesByWeekKey[nextKey] ?? '';
+    if (_weekNotesController.text == nextText) {
+      return;
+    }
+
+    _isSyncingWeekNotesController = true;
+    _weekNotesController.text = nextText;
+    _weekNotesController.selection = TextSelection.collapsed(
+      offset: _weekNotesController.text.length,
+    );
+    _isSyncingWeekNotesController = false;
+  }
+
+  void _onWeekNotesChanged(String value) {
+    if (_isSyncingWeekNotesController) {
+      return;
+    }
+    if (_activeWeekNotesKey.isEmpty) {
+      _activeWeekNotesKey = _weekNotesKeyForDate(_planningAnchorDate);
+    }
+
+    if (value.trim().isEmpty) {
+      _weekNotesByWeekKey.remove(_activeWeekNotesKey);
+    } else {
+      _weekNotesByWeekKey[_activeWeekNotesKey] = value;
+    }
+    _saveWeekNotes();
   }
 
   Future<File> _headerPostItFile() async {
@@ -2206,7 +2307,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   Widget _buildViewSwitcher() {
-    Widget buildButton({required String label, required MainView view}) {
+    Widget buildButton({required IconData icon, required MainView view}) {
       final isSelected = _currentView == view;
       if (isSelected) {
         return FilledButton(
@@ -2215,7 +2316,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               _currentView = view;
             });
           },
-          child: Text(label),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size(40, 40),
+            padding: const EdgeInsets.all(8),
+          ),
+          child: Icon(icon, size: 18),
         );
       }
       return OutlinedButton(
@@ -2224,7 +2329,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             _currentView = view;
           });
         },
-        child: Text(label),
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(40, 40),
+          padding: const EdgeInsets.all(8),
+        ),
+        child: Icon(icon, size: 18),
       );
     }
 
@@ -2233,11 +2342,29 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            buildButton(label: 'Today', view: MainView.today),
-            const SizedBox(width: 8),
-            buildButton(label: 'Planning', view: MainView.planning),
-            const SizedBox(width: 8),
-            buildButton(label: 'Projets', view: MainView.projects),
+            Tooltip(
+              message: 'Today',
+              child: buildButton(
+                icon: Icons.bolt_rounded,
+                view: MainView.today,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Tooltip(
+              message: 'Semaine',
+              child: buildButton(
+                icon: Icons.calendar_view_week_rounded,
+                view: MainView.planning,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Tooltip(
+              message: 'Projets',
+              child: buildButton(
+                icon: Icons.rocket_launch_rounded,
+                view: MainView.projects,
+              ),
+            ),
           ],
         ),
         const SizedBox(width: 12),
@@ -2331,6 +2458,98 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   Widget _buildTodayView() {
     final tasksForToday = _todayTasks;
+    final isTimelineExpanded = _todayExpandedPane == _TodayPane.timeline;
+    final showTasksPane = _todayExpandedPane != _TodayPane.timeline;
+    final showTimelinePane = _todayExpandedPane == null || isTimelineExpanded;
+
+    Widget buildPaneHeader({
+      String? title,
+      required bool collapsed,
+      required bool expanded,
+      required VoidCallback onCollapsePressed,
+      required VoidCallback onExpandPressed,
+    }) {
+      return Row(
+        children: [
+          if (title != null)
+            Text(title, style: Theme.of(context).textTheme.titleMedium),
+          const Spacer(),
+          IconButton(
+            onPressed: onCollapsePressed,
+            tooltip: collapsed ? 'Afficher' : 'Réduire',
+            icon: Icon(collapsed ? Icons.unfold_more : Icons.unfold_less),
+            visualDensity: VisualDensity.compact,
+          ),
+          IconButton(
+            onPressed: onExpandPressed,
+            tooltip: expanded ? 'Quitter plein écran' : 'Plein écran',
+            icon: Icon(expanded ? Icons.fullscreen_exit : Icons.open_in_full),
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      );
+    }
+
+    Widget buildTasksPane() {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: tasksForToday.isEmpty
+                  ? Center(
+                      child: Text(
+                        'Aucune tâche pour aujourd’hui.',
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: tasksForToday.length,
+                      itemBuilder: (context, index) {
+                        final task = tasksForToday[index];
+                        return Padding(
+                          key: ObjectKey(task),
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: _buildTaskTile(task),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    Widget buildTimelinePane() {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            buildPaneHeader(
+              title: 'Timeline',
+              collapsed: _todayTimelinePaneCollapsed,
+              expanded: isTimelineExpanded,
+              onCollapsePressed: () =>
+                  _toggleTodayPaneCollapse(_TodayPane.timeline),
+              onExpandPressed: () =>
+                  _toggleTodayPaneExpand(_TodayPane.timeline),
+            ),
+            if (!_todayTimelinePaneCollapsed) const SizedBox(height: 8),
+            if (!_todayTimelinePaneCollapsed) _buildPlanningDayView(_todayOnly),
+          ],
+        ),
+      );
+    }
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -2351,24 +2570,18 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 14),
           Expanded(
-            child: tasksForToday.isEmpty
-                ? Center(
-                    child: Text(
-                      'Aucune tâche pour aujourd’hui.',
-                      style: Theme.of(context).textTheme.bodyLarge,
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: tasksForToday.length,
-                    itemBuilder: (context, index) {
-                      final task = tasksForToday[index];
-                      return Padding(
-                        key: ObjectKey(task),
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: _buildTaskTile(task),
-                      );
-                    },
+            child: Column(
+              children: [
+                if (showTasksPane) Expanded(flex: 8, child: buildTasksPane()),
+                if (showTasksPane && showTimelinePane)
+                  const SizedBox(height: 10),
+                if (showTimelinePane)
+                  Expanded(
+                    flex: _todayTimelinePaneCollapsed ? 1 : 8,
+                    child: buildTimelinePane(),
                   ),
+              ],
+            ),
           ),
         ],
       ),
@@ -2380,6 +2593,94 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final tasks = selectedProject == null
         ? <TaskItem>[]
         : _tasksForProject(selectedProject);
+
+    Widget buildProjectRow(ProjectItem project) {
+      final isSelected = _selectedProjectId == project.id;
+
+      return Padding(
+        key: ValueKey('project-${project.id}'),
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border(
+                  left: BorderSide(color: project.color.color, width: 2),
+                  top: BorderSide(color: project.color.color, width: 1),
+                  right: BorderSide(color: project.color.color, width: 1),
+                  bottom: BorderSide(color: project.color.color, width: 1),
+                ),
+              ),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(14),
+                child: ListTile(
+                  selected: isSelected,
+                  leading: IconButton(
+                    onPressed: () => _cycleProjectStatus(project),
+                    icon: Icon(
+                      _statusIcon(project.status),
+                      color: project.color.color,
+                    ),
+                    tooltip: 'Changer le statut',
+                  ),
+                  title: Text(project.name),
+                  trailing: IconButton(
+                    onPressed: () => _selectProjectTasksPanel(project),
+                    tooltip: 'Afficher les tâches',
+                    icon: Icon(
+                      isSelected
+                          ? Icons.checklist_rounded
+                          : Icons.checklist_outlined,
+                    ),
+                  ),
+                  onTap: () => _openProjectEditor(project),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    Widget buildLeftTasksPanel() {
+      if (selectedProject == null) {
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            'Utilise le bouton des tâches pour afficher celles d\'un projet.',
+            style: Theme.of(context).textTheme.bodyLarge,
+          ),
+        );
+      }
+
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Les tâches de ce projet sont affichées dans le panneau de droite.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ],
+        ),
+      );
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -2405,143 +2706,28 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 14),
                 Expanded(
-                  child: _projects.isEmpty
-                      ? Center(
-                          child: Text(
-                            'Aucun projet.',
-                            style: Theme.of(context).textTheme.bodyLarge,
-                          ),
-                        )
-                      : ListView.builder(
-                          itemCount: _projects.length,
-                          itemBuilder: (context, index) {
-                            final project = _projects[index];
-                            final isSelected = _selectedProjectId == project.id;
-                            final projectTasks = _tasksForProject(project);
-
-                            return Padding(
-                              key: ValueKey('project-${project.id}'),
-                              padding: const EdgeInsets.only(bottom: 10),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Container(
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(14),
-                                      border: Border(
-                                        left: BorderSide(
-                                          color: project.color.color,
-                                          width: 2,
-                                        ),
-                                        top: BorderSide(
-                                          color: project.color.color,
-                                          width: 1,
-                                        ),
-                                        right: BorderSide(
-                                          color: project.color.color,
-                                          width: 1,
-                                        ),
-                                        bottom: BorderSide(
-                                          color: project.color.color,
-                                          width: 1,
-                                        ),
-                                      ),
-                                    ),
-                                    child: Material(
-                                      color: Colors.transparent,
-                                      borderRadius: BorderRadius.circular(14),
-                                      child: ListTile(
-                                        selected: isSelected,
-                                        leading: IconButton(
-                                          onPressed: () =>
-                                              _cycleProjectStatus(project),
-                                          icon: Icon(
-                                            _statusIcon(project.status),
-                                            color: project.color.color,
-                                          ),
-                                          tooltip: 'Changer le statut',
-                                        ),
-                                        title: Text(project.name),
-                                        onTap: () {
-                                          setState(() {
-                                            _selectedProjectId = project.id;
-                                          });
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                  if (isSelected) const SizedBox(height: 8),
-                                  if (isSelected)
-                                    Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          TextField(
-                                            controller:
-                                                _quickAddProjectTaskController,
-                                            textInputAction:
-                                                TextInputAction.done,
-                                            onSubmitted: (_) =>
-                                                _addTaskToSelectedProjectFromPrompt(),
-                                            decoration: InputDecoration(
-                                              hintText:
-                                                  'Entrer le nom de la nouvelle tâche du projet…',
-                                              suffixIcon: IconButton(
-                                                onPressed:
-                                                    _addTaskToSelectedProjectFromPrompt,
-                                                icon: const Icon(Icons.add),
-                                                tooltip: 'Ajouter',
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 10),
-                                          if (projectTasks.isEmpty)
-                                            Align(
-                                              alignment: Alignment.centerLeft,
-                                              child: Text(
-                                                'Aucune tâche dans ce projet.',
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodyLarge,
-                                              ),
-                                            )
-                                          else
-                                            ListView.builder(
-                                              shrinkWrap: true,
-                                              physics:
-                                                  const NeverScrollableScrollPhysics(),
-                                              itemCount: projectTasks.length,
-                                              itemBuilder:
-                                                  (context, taskIndex) {
-                                                    final task =
-                                                        projectTasks[taskIndex];
-                                                    return Padding(
-                                                      key: ObjectKey(task),
-                                                      padding:
-                                                          const EdgeInsets.only(
-                                                            bottom: 10,
-                                                          ),
-                                                      child: _buildTaskTile(
-                                                        task,
-                                                      ),
-                                                    );
-                                                  },
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                ],
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: _projects.isEmpty
+                            ? Center(
+                                child: Text(
+                                  'Aucun projet.',
+                                  style: Theme.of(context).textTheme.bodyLarge,
+                                ),
+                              )
+                            : ListView.builder(
+                                itemCount: _projects.length,
+                                itemBuilder: (context, index) {
+                                  final project = _projects[index];
+                                  return buildProjectRow(project);
+                                },
                               ),
-                            );
-                          },
-                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      buildLeftTasksPanel(),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -2571,72 +2757,30 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 14),
                     Expanded(
-                      child: _projects.isEmpty
-                          ? Center(
-                              child: Text(
-                                'Aucun projet.',
-                                style: Theme.of(context).textTheme.bodyLarge,
-                              ),
-                            )
-                          : ListView.builder(
-                              itemCount: _projects.length,
-                              itemBuilder: (context, index) {
-                                final project = _projects[index];
-                                return Padding(
-                                  key: ValueKey(
-                                    'desktop-project-${project.id}',
-                                  ),
-                                  padding: const EdgeInsets.only(bottom: 10),
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(14),
-                                      border: Border(
-                                        left: BorderSide(
-                                          color: project.color.color,
-                                          width: 2,
-                                        ),
-                                        top: BorderSide(
-                                          color: project.color.color,
-                                          width: 1,
-                                        ),
-                                        right: BorderSide(
-                                          color: project.color.color,
-                                          width: 1,
-                                        ),
-                                        bottom: BorderSide(
-                                          color: project.color.color,
-                                          width: 1,
-                                        ),
-                                      ),
+                      child: Column(
+                        children: [
+                          Expanded(
+                            child: _projects.isEmpty
+                                ? Center(
+                                    child: Text(
+                                      'Aucun projet.',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodyLarge,
                                     ),
-                                    child: Material(
-                                      color: Colors.transparent,
-                                      borderRadius: BorderRadius.circular(14),
-                                      child: ListTile(
-                                        selected:
-                                            _selectedProjectId == project.id,
-                                        leading: IconButton(
-                                          onPressed: () =>
-                                              _cycleProjectStatus(project),
-                                          icon: Icon(
-                                            _statusIcon(project.status),
-                                            color: project.color.color,
-                                          ),
-                                          tooltip: 'Changer le statut',
-                                        ),
-                                        title: Text(project.name),
-                                        onTap: () {
-                                          setState(() {
-                                            _selectedProjectId = project.id;
-                                          });
-                                        },
-                                      ),
-                                    ),
+                                  )
+                                : ListView.builder(
+                                    itemCount: _projects.length,
+                                    itemBuilder: (context, index) {
+                                      final project = _projects[index];
+                                      return buildProjectRow(project);
+                                    },
                                   ),
-                                );
-                              },
-                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          buildLeftTasksPanel(),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -2653,8 +2797,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   child: selectedProject == null
                       ? Center(
                           child: Text(
-                            'Sélectionne un projet pour voir ses tâches.',
+                            'Utilise le bouton des tâches sur un projet pour afficher ses tâches à droite.',
                             style: Theme.of(context).textTheme.bodyLarge,
+                            textAlign: TextAlign.center,
                           ),
                         )
                       : Column(
@@ -2665,6 +2810,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                               style: Theme.of(context).textTheme.titleLarge,
                             ),
                             const SizedBox(height: 10),
+                            const SizedBox(height: 6),
                             TextField(
                               controller: _quickAddProjectTaskController,
                               textInputAction: TextInputAction.done,
@@ -2681,23 +2827,23 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 10),
+                            const SizedBox(height: 12),
                             Expanded(
                               child: tasks.isEmpty
-                                  ? Center(
-                                      child: Text(
-                                        'Aucune tâche dans ce projet.',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodyLarge,
-                                      ),
+                                  ? Text(
+                                      'Aucune tâche dans ce projet.',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodyLarge,
                                     )
                                   : ListView.builder(
                                       itemCount: tasks.length,
-                                      itemBuilder: (context, index) {
-                                        final task = tasks[index];
+                                      itemBuilder: (context, taskIndex) {
+                                        final task = tasks[taskIndex];
                                         return Padding(
-                                          key: ObjectKey(task),
+                                          key: ValueKey(
+                                            'project-right-${selectedProject.id}-${task.name}-$taskIndex',
+                                          ),
                                           padding: const EdgeInsets.only(
                                             bottom: 10,
                                           ),
@@ -2714,56 +2860,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           ),
         );
       },
-    );
-  }
-
-  Widget _buildPlanningModeSelector() {
-    Widget scopeButton({
-      required String label,
-      required PlanningScope scope,
-      required VoidCallback onPressed,
-    }) {
-      final isSelected = _planningScope == scope;
-      if (isSelected) {
-        return FilledButton(onPressed: onPressed, child: Text(label));
-      }
-      return OutlinedButton(onPressed: onPressed, child: Text(label));
-    }
-
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        scopeButton(
-          label: 'Aujourd\'hui',
-          scope: PlanningScope.day,
-          onPressed: () {
-            setState(() {
-              _planningScope = PlanningScope.day;
-              _planningAnchorDate = _todayOnly;
-              _lastAutoScrolledPlanningDay = null;
-            });
-          },
-        ),
-        scopeButton(
-          label: 'Semaine',
-          scope: PlanningScope.week,
-          onPressed: () {
-            setState(() {
-              _planningScope = PlanningScope.week;
-            });
-          },
-        ),
-        scopeButton(
-          label: 'Mois',
-          scope: PlanningScope.month,
-          onPressed: () {
-            setState(() {
-              _planningScope = PlanningScope.month;
-            });
-          },
-        ),
-      ],
     );
   }
 
@@ -2877,10 +2973,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         timedLayouts.addAll(clusterLayouts);
       }
     }
-
-    final unscheduled = dayTasks
-        .where((task) => task.startTime == null || task.endTime == null)
-        .toList();
 
     final nowMinutes = _liveNow.hour * 60 + _liveNow.minute;
 
@@ -3107,7 +3199,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 },
               ),
             ),
-            if (timedTasks.isEmpty && unscheduled.isEmpty) ...[
+            if (timedTasks.isEmpty) ...[
               const SizedBox(height: 14),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -3117,35 +3209,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 ),
               ),
             ],
-            if (unscheduled.isNotEmpty) const SizedBox(height: 14),
-            if (unscheduled.isNotEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Sans horaire',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    for (final task in unscheduled)
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: _buildTaskNameWithRecurrenceIcon(
-                          task,
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        onTap: () => _openTaskEditor(task),
-                      ),
-                  ],
-                ),
-              ),
           ],
         ),
       ),
@@ -3171,8 +3234,44 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               mainAxisSpacing: 10,
               childAspectRatio: columns == 1 ? 2.4 : 1.25,
             ),
-            itemCount: days.length,
+            itemCount: days.length + 1,
             itemBuilder: (context, index) {
+              if (index == days.length) {
+                return Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.black12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Notes',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _weekNotesController,
+                          onChanged: _onWeekNotesChanged,
+                          expands: true,
+                          maxLines: null,
+                          textAlignVertical: TextAlignVertical.top,
+                          decoration: const InputDecoration(
+                            hintText: 'Ecris tes notes de semaine...',
+                            border: InputBorder.none,
+                            filled: false,
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
               final day = days[index];
               final tasks = _completedTasksForDate(day);
               final timedTasks = tasks
@@ -3346,184 +3445,17 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildPlanningMonthView(DateTime anchorDate) {
-    final days = _monthGridDays(anchorDate);
-    const labels = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
-
-    return Expanded(
-      child: Column(
-        children: [
-          Row(
-            children: labels
-                .map(
-                  (label) => Expanded(
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Text(
-                          label,
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                      ),
-                    ),
-                  ),
-                )
-                .toList(),
-          ),
-          Expanded(
-            child: GridView.builder(
-              itemCount: days.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 7,
-                crossAxisSpacing: 6,
-                mainAxisSpacing: 6,
-                childAspectRatio: 1.15,
-              ),
-              itemBuilder: (context, index) {
-                final day = days[index];
-                final tasks = _completedTasksForDate(day);
-                final inCurrentMonth = day.month == anchorDate.month;
-                final isToday = _isSameDay(day, _todayOnly);
-
-                return GestureDetector(
-                  onDoubleTap: () => _openNewTaskForDate(day),
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: inCurrentMonth ? Colors.white : Colors.black12,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: isToday
-                            ? Theme.of(context).colorScheme.primary
-                            : Colors.transparent,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '${day.day}',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        const SizedBox(height: 4),
-                        if (tasks.isNotEmpty)
-                          Expanded(
-                            child: ListView.builder(
-                              padding: EdgeInsets.zero,
-                              itemCount: tasks.length,
-                              itemBuilder: (context, taskIndex) {
-                                final task = tasks[taskIndex];
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 3),
-                                  child: InkWell(
-                                    onTap: () => _openTaskEditor(task),
-                                    child: Container(
-                                      width: double.infinity,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 4,
-                                        vertical: 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(6),
-                                        border: Border(
-                                          left: BorderSide(
-                                            color: _taskMarkerColor(task),
-                                            width: 1,
-                                          ),
-                                          top: BorderSide(
-                                            color: _taskMarkerColor(task),
-                                            width: 1,
-                                          ),
-                                          right: BorderSide(
-                                            color: _taskMarkerColor(task),
-                                            width: 1,
-                                          ),
-                                          bottom: BorderSide(
-                                            color: _taskMarkerColor(task),
-                                            width: 1,
-                                          ),
-                                        ),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          if (task.startTime != null) ...[
-                                            Text(
-                                              '${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
-                                              style: Theme.of(
-                                                context,
-                                              ).textTheme.bodySmall,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            const SizedBox(width: 4),
-                                          ],
-                                          if (_isRecurringTask(task)) ...[
-                                            const Icon(
-                                              Icons.repeat_rounded,
-                                              size: 12,
-                                              color: Colors.black87,
-                                            ),
-                                            const SizedBox(width: 2),
-                                          ],
-                                          Expanded(
-                                            child: Text(
-                                              task.name,
-                                              style: Theme.of(
-                                                context,
-                                              ).textTheme.bodySmall,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildPlanningView() {
     final anchor = _dateOnly(_planningAnchorDate);
-    final headerTitle = _planningScope == PlanningScope.month
-        ? _monthLabel(anchor)
-        : _planningScope == PlanningScope.week
-        ? 'Semaine du ${_twoDigits(_startOfWeek(anchor).day)}/${_twoDigits(_startOfWeek(anchor).month)}'
-        : '${_dayLabel(anchor)} ${_twoDigits(anchor.day)}/${_twoDigits(anchor.month)}/${anchor.year}';
+    final headerTitle =
+        'Semaine du ${_twoDigits(_startOfWeek(anchor).day)}/${_twoDigits(_startOfWeek(anchor).month)}';
 
     DateTime previousAnchor() {
-      switch (_planningScope) {
-        case PlanningScope.day:
-          return anchor.subtract(const Duration(days: 1));
-        case PlanningScope.week:
-          return anchor.subtract(const Duration(days: 7));
-        case PlanningScope.month:
-          return DateTime(anchor.year, anchor.month - 1, anchor.day);
-      }
+      return anchor.subtract(const Duration(days: 7));
     }
 
     DateTime nextAnchor() {
-      switch (_planningScope) {
-        case PlanningScope.day:
-          return anchor.add(const Duration(days: 1));
-        case PlanningScope.week:
-          return anchor.add(const Duration(days: 7));
-        case PlanningScope.month:
-          return DateTime(anchor.year, anchor.month + 1, anchor.day);
-      }
+      return anchor.add(const Duration(days: 7));
     }
 
     return Padding(
@@ -3531,18 +3463,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildPlanningModeSelector(),
-          const SizedBox(height: 10),
           Row(
             children: [
               IconButton(
                 onPressed: () {
                   setState(() {
                     _planningAnchorDate = previousAnchor();
-                    if (_planningScope == PlanningScope.day) {
-                      _lastAutoScrolledPlanningDay = null;
-                    }
                   });
+                  _syncWeekNotesControllerForDate(_planningAnchorDate);
                 },
                 icon: const Icon(Icons.chevron_left),
                 tooltip: 'Periode precedente',
@@ -3558,10 +3486,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 onPressed: () {
                   setState(() {
                     _planningAnchorDate = nextAnchor();
-                    if (_planningScope == PlanningScope.day) {
-                      _lastAutoScrolledPlanningDay = null;
-                    }
                   });
+                  _syncWeekNotesControllerForDate(_planningAnchorDate);
                 },
                 icon: const Icon(Icons.chevron_right),
                 tooltip: 'Periode suivante',
@@ -3569,12 +3495,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             ],
           ),
           const SizedBox(height: 10),
-          if (_planningScope == PlanningScope.day)
-            _buildPlanningDayView(anchor)
-          else if (_planningScope == PlanningScope.week)
-            _buildPlanningWeekView(anchor)
-          else
-            _buildPlanningMonthView(anchor),
+          _buildPlanningWeekView(anchor),
         ],
       ),
     );
