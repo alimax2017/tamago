@@ -13,65 +13,23 @@ void main() {
   runZonedGuarded(
     () {
       WidgetsFlutterBinding.ensureInitialized();
-
       FlutterError.onError = (FlutterErrorDetails details) {
         debugPrint('[Tamago][FlutterError] ${details.exceptionAsString()}');
         debugPrint(details.stack?.toString() ?? 'No stack trace');
       };
-
       ui.PlatformDispatcher.instance.onError =
           (Object error, StackTrace stack) {
             debugPrint('[Tamago][PlatformError] $error');
             debugPrint(stack.toString());
             return true;
           };
-
-      runApp(const TamagoApp());
+      runApp(const MaterialApp(home: TodayPage()));
     },
-    (Object error, StackTrace stack) {
+    (error, stack) {
       debugPrint('[Tamago][ZoneError] $error');
       debugPrint(stack.toString());
     },
   );
-}
-
-class TamagoApp extends StatelessWidget {
-  const TamagoApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    const pastelBackground = Color(0xFFFFF4F9);
-    const pastelPrimary = Color(0xFFE8A8C9);
-    const pastelSecondary = Color(0xFFFFC9DE);
-
-    return MaterialApp(
-      title: 'Tamago Tasks',
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: pastelPrimary,
-          brightness: Brightness.light,
-          primary: pastelPrimary,
-          secondary: pastelSecondary,
-          surface: Colors.white,
-        ),
-        scaffoldBackgroundColor: pastelBackground,
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: BorderSide.none,
-          ),
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 14,
-            vertical: 12,
-          ),
-        ),
-      ),
-      home: const TodayPage(),
-    );
-  }
 }
 
 enum MainView { today, planning, projects }
@@ -301,6 +259,63 @@ class TodayPage extends StatefulWidget {
 }
 
 class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
+    final Set<String> _expandedProjectIds = <String>{};
+  DateTime _withTime(DateTime day, TimeOfDay time) {
+    return DateTime(day.year, day.month, day.day, time.hour, time.minute);
+  }
+
+  void _resetRecurringTasksStatus() {
+    final today = _dateOnly(DateTime.now());
+    for (final task in _tasks) {
+      if (_isRecurringTask(task) &&
+          task.status == 'Terminé' &&
+          !_isSameDay(task.date, today)) {
+        task.status = 'À faire';
+      }
+    }
+  }
+
+  Duration? _reminderOffset(String option) {
+    switch (option) {
+      case '1 jour avant':
+        return const Duration(days: 1);
+      case '1h avant':
+        return const Duration(hours: 1);
+      case '10 min avant':
+        return const Duration(minutes: 10);
+      default:
+        return null;
+    }
+  }
+
+  String _encodeReminderSelections(Set<String> selections) {
+    if (selections.isEmpty) return 'Aucun';
+    return selections.join(' | ');
+  }
+
+  void _centerTimelineOnNow() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_planningDayScrollController.hasClients) return;
+      final nowMinutes = _liveNow.hour * 60 + _liveNow.minute;
+      final forcedMin = nowMinutes - 180;
+      final minMinutes = forcedMin;
+      final startHour = minMinutes ~/ 60;
+      const hourHeight = 72.0;
+      final nowTop = ((nowMinutes / 60) - startHour) * hourHeight;
+      final viewportHeight =
+          _planningDayScrollController.position.viewportDimension;
+      final targetOffset = nowTop.clamp(
+        0.0,
+        _planningDayScrollController.position.maxScrollExtent,
+      );
+      _planningDayScrollController.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
   static const _tasksStorageKey = 'tamago_tasks_v1';
   static const _projectsStorageKey = 'tamago_projects_v1';
   static const _weekNotesStorageKey = 'tamago_week_notes_v1';
@@ -392,46 +407,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     if (trimmed.isEmpty || trimmed == 'Aucun') {
       return const <String>[];
     }
-
     final tokens = trimmed
         .split(RegExp(r'\||,'))
         .map((value) => value.trim())
         .where((value) => value.isNotEmpty && value != 'Aucun');
-
-    return tokens
-        .where((value) => _reminderOptions.contains(value))
-        .toSet()
-        .toList();
-  }
-
-  String _encodeReminderSelections(Set<String> reminders) {
-    if (reminders.isEmpty) {
-      return 'Aucun';
-    }
-    final ordered = _reminderOptions
-        .where((option) => reminders.contains(option))
-        .toList();
-    if (ordered.isEmpty) {
-      return 'Aucun';
-    }
-    return ordered.join('|');
-  }
-
-  Duration? _reminderOffset(String reminder) {
-    switch (reminder) {
-      case '1 jour avant':
-        return const Duration(days: 1);
-      case '1h avant':
-        return const Duration(hours: 1);
-      case '10 min avant':
-        return const Duration(minutes: 10);
-      default:
-        return null;
-    }
-  }
-
-  DateTime _withTime(DateTime day, TimeOfDay time) {
-    return DateTime(day.year, day.month, day.day, time.hour, time.minute);
+    return tokens.toList();
   }
 
   String _reminderId(
@@ -847,6 +827,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         _todayTasksPaneCollapsed = false;
       } else {
         _todayTimelinePaneCollapsed = false;
+        _centerTimelineOnNow();
       }
     });
   }
@@ -964,6 +945,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       if (_projects.isNotEmpty && _selectedProjectId == null) {
         _selectedProjectId = _projects.first.id;
       }
+      _resetRecurringTasksStatus();
     });
     _refreshLiveNowAndReminders();
   }
@@ -2595,51 +2577,37 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         : _tasksForProject(selectedProject);
 
     Widget buildProjectRow(ProjectItem project) {
-      final isSelected = _selectedProjectId == project.id;
-
+      final isExpanded = _expandedProjectIds.contains(project.id);
       return Padding(
         key: ValueKey('project-${project.id}'),
         padding: const EdgeInsets.only(bottom: 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(14),
-                border: Border(
-                  left: BorderSide(color: project.color.color, width: 2),
-                  top: BorderSide(color: project.color.color, width: 1),
-                  right: BorderSide(color: project.color.color, width: 1),
-                  bottom: BorderSide(color: project.color.color, width: 1),
+            Row(
+              children: [
+                IconButton(
+                  onPressed: () => _cycleProjectStatus(project),
+                  icon: Icon(_statusIcon(project.status), color: project.color.color),
+                  tooltip: 'Changer le statut',
                 ),
-              ),
-              child: Material(
-                color: Colors.transparent,
-                borderRadius: BorderRadius.circular(14),
-                child: ListTile(
-                  selected: isSelected,
-                  leading: IconButton(
-                    onPressed: () => _cycleProjectStatus(project),
-                    icon: Icon(
-                      _statusIcon(project.status),
-                      color: project.color.color,
-                    ),
-                    tooltip: 'Changer le statut',
-                  ),
-                  title: Text(project.name),
-                  trailing: IconButton(
-                    onPressed: () => _selectProjectTasksPanel(project),
-                    tooltip: 'Afficher les tâches',
-                    icon: Icon(
-                      isSelected
-                          ? Icons.checklist_rounded
-                          : Icons.checklist_outlined,
-                    ),
-                  ),
-                  onTap: () => _openProjectEditor(project),
+                Expanded(
+                  child: Text(project.name, style: Theme.of(context).textTheme.titleMedium),
                 ),
-              ),
+                IconButton(
+                  onPressed: () {
+                    setState(() {
+                      if (isExpanded) {
+                        _expandedProjectIds.remove(project.id);
+                      } else {
+                        _expandedProjectIds.add(project.id);
+                      }
+                    });
+                  },
+                  tooltip: isExpanded ? 'Masquer les tâches' : 'Afficher les tâches',
+                  icon: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
+                ),
+              ],
             ),
           ],
         ),
@@ -2699,43 +2667,87 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                     hintText: 'Entrer le nom du nouveau projet…',
                     suffixIcon: IconButton(
                       onPressed: _addProjectFromPrompt,
-                      icon: const Icon(Icons.add),
-                      tooltip: 'Ajouter',
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Expanded(
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: _projects.isEmpty
-                            ? Center(
-                                child: Text(
-                                  'Aucun projet.',
-                                  style: Theme.of(context).textTheme.bodyLarge,
+                      return Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            TextField(
+                              controller: _quickAddProjectController,
+                              textInputAction: TextInputAction.done,
+                              onSubmitted: (_) => _addProjectFromPrompt(),
+                              decoration: InputDecoration(
+                                hintText: 'Entrer le nom du nouveau projet…',
+                                suffixIcon: IconButton(
+                                  onPressed: _addProjectFromPrompt,
+                                  icon: const Icon(Icons.add),
+                                  tooltip: 'Ajouter',
                                 ),
-                              )
-                            : ListView.builder(
-                                itemCount: _projects.length,
-                                itemBuilder: (context, index) {
-                                  final project = _projects[index];
-                                  return buildProjectRow(project);
-                                },
                               ),
-                      ),
-                      const SizedBox(height: 10),
-                      buildLeftTasksPanel(),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-        }
-
-        return Padding(
-          padding: const EdgeInsets.all(16),
+                            ),
+                            const SizedBox(height: 14),
+                            Expanded(
+                              child: _projects.isEmpty
+                                  ? Center(
+                                      child: Text(
+                                        'Aucun projet.',
+                                        style: Theme.of(context).textTheme.bodyLarge,
+                                      ),
+                                    )
+                                  : ListView.builder(
+                                      itemCount: _projects.length,
+                                      itemBuilder: (context, index) {
+                                        final project = _projects[index];
+                                        final isExpanded = _expandedProjectIds.contains(project.id);
+                                        return Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            buildProjectRow(project),
+                                            if (isExpanded) ...[
+                                              const SizedBox(height: 8),
+                                              TextField(
+                                                controller: _quickAddProjectTaskController,
+                                                textInputAction: TextInputAction.done,
+                                                onSubmitted: (_) => _addTaskToSelectedProjectFromPrompt(),
+                                                decoration: InputDecoration(
+                                                  hintText: 'Entrer le nom de la nouvelle tâche du projet…',
+                                                  suffixIcon: IconButton(
+                                                    onPressed: _addTaskToSelectedProjectFromPrompt,
+                                                    icon: const Icon(Icons.add),
+                                                    tooltip: 'Ajouter',
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(height: 8),
+                                              ...(_tasksForProject(project).isEmpty
+                                                  ? [
+                                                      Text(
+                                                        'Aucune tâche dans ce projet.',
+                                                        style: Theme.of(context).textTheme.bodyLarge,
+                                                      ),
+                                                    ]
+                                                  : _tasksForProject(project).map((task) =>
+                                                      ListTile(
+                                                        key: ObjectKey(task),
+                                                        title: _buildTaskNameWithRecurrenceIcon(task, style: Theme.of(context).textTheme.bodyMedium),
+                                                        subtitle: task.startTime != null && task.endTime != null
+                                                            ? Text(_timeRangeLabel(task), style: Theme.of(context).textTheme.bodySmall)
+                                                            : null,
+                                                        onTap: () => _openTaskEditor(task),
+                                                        dense: true,
+                                                        visualDensity: VisualDensity.compact,
+                                                        contentPadding: EdgeInsets.zero,
+                                                      ),
+                                                    ),
+                                              ),
+                                            ],
+                                          ],
+                                        );
+                                      },
+                                    ),
+                            ),
+                          ],
+                        ),
+                      );
           child: Row(
             children: [
               Expanded(
@@ -3003,15 +3015,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
-    final minMinutes = firstStart.clamp(0, 23 * 60);
-    final maxMinutes = lastEnd.clamp(minMinutes + 60, 24 * 60);
+    // Force la plage horaire à inclure l'heure actuelle
+    // Toujours élargir la plage pour inclure l'heure actuelle
+    final forcedMin = nowMinutes - 180;
+    final forcedMax = nowMinutes + 180;
+    final minMinutes = firstStart < forcedMin ? firstStart : forcedMin;
+    final maxMinutes = lastEnd > forcedMax ? lastEnd : forcedMax;
+
+    // Toujours afficher la ligne rouge
+    final showsNowIndicator = isTodayView;
 
     final startHour = minMinutes ~/ 60;
     final endHour = (maxMinutes / 60).ceil();
     const hourHeight = 72.0;
     final totalHeight = (endHour - startHour) * hourHeight;
-    final showsNowIndicator =
-        isTodayView && nowMinutes >= minMinutes && nowMinutes <= maxMinutes;
     final nowTop = ((nowMinutes / 60) - startHour) * hourHeight;
 
     if (isTodayView && _lastAutoScrolledPlanningDay == null) {
@@ -3019,7 +3036,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         if (!mounted || !_planningDayScrollController.hasClients) {
           return;
         }
-        final targetOffset = (nowTop - 180).clamp(
+        final viewportHeight =
+            _planningDayScrollController.position.viewportDimension;
+        final targetOffset = (nowTop - viewportHeight / 2).clamp(
           0.0,
           _planningDayScrollController.position.maxScrollExtent,
         );
@@ -3273,7 +3292,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               }
 
               final day = days[index];
-              final tasks = _completedTasksForDate(day);
+              final tasks = _tasksForDate(day);
               final timedTasks = tasks
                   .where(
                     (task) => task.startTime != null && task.endTime != null,
