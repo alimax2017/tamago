@@ -259,7 +259,47 @@ class TodayPage extends StatefulWidget {
 }
 
 class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
-    final Set<String> _expandedProjectIds = <String>{};
+  Widget buildMobileTodayTasksList() {
+    final todayTasks = _tasksForDate(_todayOnly);
+    return Container(
+      height: 320,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: todayTasks.isEmpty
+          ? Center(
+              child: Text(
+                'Aucune tâche pour aujourd’hui.',
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
+            )
+          : Scrollbar(
+              child: ListView.builder(
+                itemCount: todayTasks.length,
+                itemBuilder: (context, index) {
+                  final task = todayTasks[index];
+                  return ListTile(
+                    key: ObjectKey(task),
+                    title: _buildTaskNameWithRecurrenceIcon(
+                      task,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    subtitle: task.startTime != null && task.endTime != null
+                        ? Text(
+                            _timeRangeLabel(task),
+                            style: Theme.of(context).textTheme.bodySmall,
+                          )
+                        : null,
+                    onTap: () => _openTaskEditor(task),
+                    dense: true,
+                    visualDensity: VisualDensity.compact,
+                    contentPadding: EdgeInsets.zero,
+                  );
+                },
+              ),
+            ),
+    );
+  }
+
+  final Set<String> _expandedProjectIds = <String>{};
   DateTime _withTime(DateTime day, TimeOfDay time) {
     return DateTime(day.year, day.month, day.day, time.hour, time.minute);
   }
@@ -2572,306 +2612,149 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   Widget _buildProjectsView() {
     final selectedProject = _selectedProject;
-    final tasks = selectedProject == null
+    final selectedProjectTasks = selectedProject == null
         ? <TaskItem>[]
         : _tasksForProject(selectedProject);
 
     Widget buildProjectRow(ProjectItem project) {
       final isExpanded = _expandedProjectIds.contains(project.id);
+      final projectTasks = _tasksForProject(project);
       return Padding(
         key: ValueKey('project-${project.id}'),
         padding: const EdgeInsets.only(bottom: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                IconButton(
-                  onPressed: () => _cycleProjectStatus(project),
-                  icon: Icon(_statusIcon(project.status), color: project.color.color),
-                  tooltip: 'Changer le statut',
-                ),
-                Expanded(
-                  child: Text(project.name, style: Theme.of(context).textTheme.titleMedium),
-                ),
-                IconButton(
-                  onPressed: () {
-                    setState(() {
-                      if (isExpanded) {
-                        _expandedProjectIds.remove(project.id);
-                      } else {
-                        _expandedProjectIds.add(project.id);
-                      }
-                    });
-                  },
-                  tooltip: isExpanded ? 'Masquer les tâches' : 'Afficher les tâches',
-                  icon: Icon(isExpanded ? Icons.expand_less : Icons.expand_more),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-    }
-
-    Widget buildLeftTasksPanel() {
-      if (selectedProject == null) {
-        return Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(12),
+        child: Container(
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.black12),
           ),
-          child: Text(
-            'Utilise le bouton des tâches pour afficher celles d\'un projet.',
-            style: Theme.of(context).textTheme.bodyLarge,
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  IconButton(
+                    onPressed: () => _cycleProjectStatus(project),
+                    icon: Icon(
+                      _statusIcon(project.status),
+                      color: project.color.color,
+                    ),
+                    tooltip: 'Changer le statut',
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () => _openProjectEditor(project),
+                      child: Text(
+                        project.name,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${projectTasks.length}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    onPressed: () {
+                      setState(() {
+                        _selectedProjectId = project.id;
+                        if (isExpanded) {
+                          _expandedProjectIds.remove(project.id);
+                        } else {
+                          _expandedProjectIds.add(project.id);
+                        }
+                      });
+                    },
+                    tooltip: isExpanded
+                        ? 'Masquer les tâches'
+                        : 'Afficher les tâches',
+                    icon: Icon(
+                      isExpanded ? Icons.expand_less : Icons.expand_more,
+                    ),
+                  ),
+                ],
+              ),
+              if (isExpanded)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: projectTasks.isEmpty
+                      ? Text(
+                          'Aucune tâche pour ce projet.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        )
+                      : Column(
+                          children: projectTasks.map((task) {
+                            return Padding(
+                              key: ValueKey(
+                                'project-task-${project.id}-${task.name}-${task.date.toIso8601String()}',
+                              ),
+                              padding: const EdgeInsets.only(top: 8),
+                              child: _buildTaskTile(task),
+                            );
+                          }).toList(),
+                        ),
+                ),
+            ],
           ),
-        );
-      }
-
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Les tâches de ce projet sont affichées dans le panneau de droite.',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ],
         ),
       );
     }
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isCompact = constraints.maxWidth < 900;
-
-        if (isCompact) {
-          return Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                TextField(
-                  controller: _quickAddProjectController,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => _addProjectFromPrompt(),
-                  decoration: InputDecoration(
-                    hintText: 'Entrer le nom du nouveau projet…',
-                    suffixIcon: IconButton(
-                      onPressed: _addProjectFromPrompt,
-                      return Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          children: [
-                            TextField(
-                              controller: _quickAddProjectController,
-                              textInputAction: TextInputAction.done,
-                              onSubmitted: (_) => _addProjectFromPrompt(),
-                              decoration: InputDecoration(
-                                hintText: 'Entrer le nom du nouveau projet…',
-                                suffixIcon: IconButton(
-                                  onPressed: _addProjectFromPrompt,
-                                  icon: const Icon(Icons.add),
-                                  tooltip: 'Ajouter',
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 14),
-                            Expanded(
-                              child: _projects.isEmpty
-                                  ? Center(
-                                      child: Text(
-                                        'Aucun projet.',
-                                        style: Theme.of(context).textTheme.bodyLarge,
-                                      ),
-                                    )
-                                  : ListView.builder(
-                                      itemCount: _projects.length,
-                                      itemBuilder: (context, index) {
-                                        final project = _projects[index];
-                                        final isExpanded = _expandedProjectIds.contains(project.id);
-                                        return Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            buildProjectRow(project),
-                                            if (isExpanded) ...[
-                                              const SizedBox(height: 8),
-                                              TextField(
-                                                controller: _quickAddProjectTaskController,
-                                                textInputAction: TextInputAction.done,
-                                                onSubmitted: (_) => _addTaskToSelectedProjectFromPrompt(),
-                                                decoration: InputDecoration(
-                                                  hintText: 'Entrer le nom de la nouvelle tâche du projet…',
-                                                  suffixIcon: IconButton(
-                                                    onPressed: _addTaskToSelectedProjectFromPrompt,
-                                                    icon: const Icon(Icons.add),
-                                                    tooltip: 'Ajouter',
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(height: 8),
-                                              ...(_tasksForProject(project).isEmpty
-                                                  ? [
-                                                      Text(
-                                                        'Aucune tâche dans ce projet.',
-                                                        style: Theme.of(context).textTheme.bodyLarge,
-                                                      ),
-                                                    ]
-                                                  : _tasksForProject(project).map((task) =>
-                                                      ListTile(
-                                                        key: ObjectKey(task),
-                                                        title: _buildTaskNameWithRecurrenceIcon(task, style: Theme.of(context).textTheme.bodyMedium),
-                                                        subtitle: task.startTime != null && task.endTime != null
-                                                            ? Text(_timeRangeLabel(task), style: Theme.of(context).textTheme.bodySmall)
-                                                            : null,
-                                                        onTap: () => _openTaskEditor(task),
-                                                        dense: true,
-                                                        visualDensity: VisualDensity.compact,
-                                                        contentPadding: EdgeInsets.zero,
-                                                      ),
-                                                    ),
-                                              ),
-                                            ],
-                                          ],
-                                        );
-                                      },
-                                    ),
-                            ),
-                          ],
-                        ),
-                      );
-          child: Row(
-            children: [
-              Expanded(
-                flex: 4,
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: _quickAddProjectController,
-                      textInputAction: TextInputAction.done,
-                      onSubmitted: (_) => _addProjectFromPrompt(),
-                      decoration: InputDecoration(
-                        hintText: 'Entrer le nom du nouveau projet…',
-                        suffixIcon: IconButton(
-                          onPressed: _addProjectFromPrompt,
-                          icon: const Icon(Icons.add),
-                          tooltip: 'Ajouter',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Expanded(
-                      child: Column(
-                        children: [
-                          Expanded(
-                            child: _projects.isEmpty
-                                ? Center(
-                                    child: Text(
-                                      'Aucun projet.',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.bodyLarge,
-                                    ),
-                                  )
-                                : ListView.builder(
-                                    itemCount: _projects.length,
-                                    itemBuilder: (context, index) {
-                                      final project = _projects[index];
-                                      return buildProjectRow(project);
-                                    },
-                                  ),
-                          ),
-                          const SizedBox(height: 10),
-                          buildLeftTasksPanel(),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          TextField(
+            controller: _quickAddProjectController,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _addProjectFromPrompt(),
+            decoration: InputDecoration(
+              hintText: 'Entrer le nom du nouveau projet…',
+              suffixIcon: IconButton(
+                onPressed: _addProjectFromPrompt,
+                icon: const Icon(Icons.add),
+                tooltip: 'Ajouter le projet',
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                flex: 6,
-                child: Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: selectedProject == null
-                      ? Center(
-                          child: Text(
-                            'Utilise le bouton des tâches sur un projet pour afficher ses tâches à droite.',
-                            style: Theme.of(context).textTheme.bodyLarge,
-                            textAlign: TextAlign.center,
-                          ),
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              selectedProject.name,
-                              style: Theme.of(context).textTheme.titleLarge,
-                            ),
-                            const SizedBox(height: 10),
-                            const SizedBox(height: 6),
-                            TextField(
-                              controller: _quickAddProjectTaskController,
-                              textInputAction: TextInputAction.done,
-                              onSubmitted: (_) =>
-                                  _addTaskToSelectedProjectFromPrompt(),
-                              decoration: InputDecoration(
-                                hintText:
-                                    'Entrer le nom de la nouvelle tâche du projet…',
-                                suffixIcon: IconButton(
-                                  onPressed:
-                                      _addTaskToSelectedProjectFromPrompt,
-                                  icon: const Icon(Icons.add),
-                                  tooltip: 'Ajouter',
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Expanded(
-                              child: tasks.isEmpty
-                                  ? Text(
-                                      'Aucune tâche dans ce projet.',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.bodyLarge,
-                                    )
-                                  : ListView.builder(
-                                      itemCount: tasks.length,
-                                      itemBuilder: (context, taskIndex) {
-                                        final task = tasks[taskIndex];
-                                        return Padding(
-                                          key: ValueKey(
-                                            'project-right-${selectedProject.id}-${task.name}-$taskIndex',
-                                          ),
-                                          padding: const EdgeInsets.only(
-                                            bottom: 10,
-                                          ),
-                                          child: _buildTaskTile(task),
-                                        );
-                                      },
-                                    ),
-                            ),
-                          ],
-                        ),
-                ),
-              ),
-            ],
+            ),
           ),
-        );
-      },
+          const SizedBox(height: 10),
+          if (selectedProject != null)
+            TextField(
+              controller: _quickAddProjectTaskController,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _addTaskToSelectedProjectFromPrompt(),
+              decoration: InputDecoration(
+                hintText:
+                    'Ajouter une tâche au projet "${selectedProject.name}"…',
+                suffixIcon: IconButton(
+                  onPressed: _addTaskToSelectedProjectFromPrompt,
+                  icon: const Icon(Icons.add_task_outlined),
+                  tooltip: 'Ajouter la tâche au projet',
+                ),
+              ),
+            ),
+          if (selectedProject != null) const SizedBox(height: 14),
+          Expanded(
+            child: _projects.isEmpty
+                ? Center(
+                    child: Text(
+                      'Aucun projet disponible.',
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
+                  )
+                : ListView(children: _projects.map(buildProjectRow).toList()),
+          ),
+          if (selectedProject != null && selectedProjectTasks.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                'Projet sélectionné: ${selectedProject.name} (${selectedProjectTasks.length} tâche(s))',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+        ],
+      ),
     );
   }
 
