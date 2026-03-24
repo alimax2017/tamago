@@ -11,6 +11,18 @@
 				"windows"
 			],
 			"isBackground": true
+		},
+		{
+			"label": "Run Flutter App Direct",
+			"type": "shell",
+			"command": "flutter",
+			"args": [
+				"run",
+				"-d",
+				"windows"
+			],
+			"isBackground": true,
+			"group": "build"
 		}
 	]
 }

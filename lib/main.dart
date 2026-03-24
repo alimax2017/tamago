@@ -1,12 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -14,8 +11,10 @@ void main() {
     () {
       WidgetsFlutterBinding.ensureInitialized();
       FlutterError.onError = (FlutterErrorDetails details) {
-        debugPrint('[Tamago][FlutterError] ${details.exceptionAsString()}');
-        debugPrint(details.stack?.toString() ?? 'No stack trace');
+        final exceptionText = details.exceptionAsString();
+        final stackText = details.stack?.toString() ?? '';
+        debugPrint('[Tamago][FlutterError] $exceptionText');
+        debugPrint(stackText.isEmpty ? 'No stack trace' : stackText);
       };
       ui.PlatformDispatcher.instance.onError =
           (Object error, StackTrace stack) {
@@ -23,13 +22,22 @@ void main() {
             debugPrint(stack.toString());
             return true;
           };
-      runApp(const MaterialApp(home: TodayPage()));
+      runApp(const TamagoApp());
     },
     (error, stack) {
       debugPrint('[Tamago][ZoneError] $error');
       debugPrint(stack.toString());
     },
   );
+}
+
+class TamagoApp extends StatelessWidget {
+  const TamagoApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(home: TodayPage());
+  }
 }
 
 enum MainView { today, planning, projects }
@@ -187,6 +195,33 @@ class _PlanningTaskLayout {
   int columnSpan = 1;
 }
 
+class _GlobalSearchResult {
+  _GlobalSearchResult({
+    required this.category,
+    required this.title,
+    required this.subtitle,
+    required this.matchedFields,
+    this.onTap,
+    this.noteContent,
+    this.onNoteChanged,
+  });
+
+  final String category;
+  final String title;
+  final String subtitle;
+  final List<_SearchMatchedField> matchedFields;
+  final VoidCallback? onTap;
+  final String? noteContent;
+  final void Function(String)? onNoteChanged;
+}
+
+class _SearchMatchedField {
+  const _SearchMatchedField({required this.label, required this.value});
+
+  final String label;
+  final String value;
+}
+
 class ProjectItem {
   ProjectItem({
     required this.id,
@@ -342,8 +377,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       final startHour = minMinutes ~/ 60;
       const hourHeight = 72.0;
       final nowTop = ((nowMinutes / 60) - startHour) * hourHeight;
-      final viewportHeight =
-          _planningDayScrollController.position.viewportDimension;
       final targetOffset = nowTop.clamp(
         0.0,
         _planningDayScrollController.position.maxScrollExtent,
@@ -359,6 +392,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   static const _tasksStorageKey = 'tamago_tasks_v1';
   static const _projectsStorageKey = 'tamago_projects_v1';
   static const _weekNotesStorageKey = 'tamago_week_notes_v1';
+  static const MethodChannel _androidWidgetChannel = MethodChannel(
+    'tamago/widget',
+  );
   static const List<String> _reminderOptions = <String>[
     '1 jour avant',
     '1h avant',
@@ -370,7 +406,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       TextEditingController();
   final TextEditingController _quickAddProjectTaskController =
       TextEditingController();
-  final TextEditingController _headerPostItController = TextEditingController();
+  final TextEditingController _headerSearchController = TextEditingController();
   final TextEditingController _weekNotesController = TextEditingController();
   final ScrollController _planningDayScrollController = ScrollController();
 
@@ -404,7 +440,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       (_) => _refreshLiveNowAndReminders(),
     );
     _loadData();
-    _loadHeaderPostIt();
     _loadWeekNotes();
   }
 
@@ -416,7 +451,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     _quickAddTaskController.dispose();
     _quickAddProjectController.dispose();
     _quickAddProjectTaskController.dispose();
-    _headerPostItController.dispose();
+    _headerSearchController.dispose();
     _weekNotesController.dispose();
     _planningDayScrollController.dispose();
     super.dispose();
@@ -424,6 +459,12 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
     debugPrint('[Tamago][Lifecycle] state=$state');
   }
 
@@ -718,12 +759,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     ).where((task) => task.status != 'Terminé').toList();
   }
 
-  List<TaskItem> _completedTasksForDate(DateTime date) {
-    return _tasksForDate(
-      date,
-    ).where((task) => task.status == 'Terminé').toList();
-  }
-
   ProjectItem? get _selectedProject {
     if (_selectedProjectId == null) {
       return null;
@@ -773,6 +808,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   TaskColorOption _taskColorFromProjectColor(ProjectColorOption projectColor) {
     return TaskColorOption.values.firstWhere(
+      // ignore: deprecated_member_use
       (taskColor) => taskColor.color.value == projectColor.color.value,
       orElse: () => TaskColorOption.gris,
     );
@@ -790,30 +826,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       project.status = _nextStatus(project.status);
     });
     _saveProjects();
-  }
-
-  void _deleteTask(TaskItem task) {
-    setState(() {
-      _tasks.remove(task);
-    });
-    _saveTasks();
-  }
-
-  void _deleteProject(ProjectItem project) {
-    setState(() {
-      _projects.removeWhere((item) => item.id == project.id);
-      if (_selectedProjectId == project.id) {
-        _selectedProjectId = _projects.isEmpty ? null : _projects.first.id;
-      }
-      for (final task in _tasks) {
-        if (task.projectId == project.id) {
-          task.projectId = null;
-          task.project = '';
-        }
-      }
-    });
-    _saveProjects();
-    _saveTasks();
   }
 
   void _addTaskFromPrompt() {
@@ -919,12 +931,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     _saveTasks();
   }
 
-  void _selectProjectTasksPanel(ProjectItem project) {
-    setState(() {
-      _selectedProjectId = project.id;
-    });
-  }
-
   Future<void> _loadData() async {
     final prefs = await SharedPreferences.getInstance();
     final rawProjects = prefs.getString(_projectsStorageKey);
@@ -988,6 +994,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       _resetRecurringTasksStatus();
     });
     _refreshLiveNowAndReminders();
+    _updateAndroidTodayWidget();
   }
 
   Future<void> _saveTasks() async {
@@ -995,6 +1002,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final payload = _tasks.map((task) => task.toJson()).toList();
     await prefs.setString(_tasksStorageKey, jsonEncode(payload));
     _refreshLiveNowAndReminders();
+    _updateAndroidTodayWidget();
+  }
+
+  Future<void> _updateAndroidTodayWidget() async {
+    try {
+      await _androidWidgetChannel.invokeMethod<void>('updateTodayTasksWidget');
+    } catch (_) {}
   }
 
   Future<void> _saveProjects() async {
@@ -1079,64 +1093,186 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     _saveWeekNotes();
   }
 
-  Future<File> _headerPostItFile() async {
-    final directory = await getApplicationDocumentsDirectory();
-    return File('${directory.path}${Platform.pathSeparator}tamago_post_it.txt');
+  List<String> _searchTokens(String query) {
+    return query
+        .toLowerCase()
+        .split(RegExp(r'\s+'))
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList();
   }
 
-  Future<void> _loadHeaderPostIt() async {
-    if (kIsWeb) {
-      return;
+  bool _matchesTokens(List<String> tokens, String haystack) {
+    if (tokens.isEmpty) {
+      return false;
+    }
+    final normalized = haystack.toLowerCase();
+    return tokens.every(normalized.contains);
+  }
+
+  bool _containsAtLeastOneToken(List<String> tokens, String value) {
+    if (tokens.isEmpty) {
+      return false;
+    }
+    final normalized = value.toLowerCase();
+    return tokens.any(normalized.contains);
+  }
+
+  List<_SearchMatchedField> _collectMatchedFields(
+    List<String> tokens,
+    List<MapEntry<String, String>> fields,
+  ) {
+    return fields
+        .where(
+          (field) =>
+              field.value.trim().isNotEmpty &&
+              _containsAtLeastOneToken(tokens, field.value),
+        )
+        .map(
+          (field) =>
+              _SearchMatchedField(label: field.key, value: field.value.trim()),
+        )
+        .toList();
+  }
+
+  List<_GlobalSearchResult> _buildGlobalSearchResults(String query) {
+    final tokens = _searchTokens(query);
+    if (tokens.isEmpty) {
+      return const <_GlobalSearchResult>[];
     }
 
-    try {
-      final file = await _headerPostItFile();
-      if (!await file.exists()) {
-        return;
+    final results = <_GlobalSearchResult>[];
+
+    for (final task in _tasks) {
+      final dateLabel =
+          '${_twoDigits(task.date.day)}/${_twoDigits(task.date.month)}/${task.date.year}';
+      final taskText = [
+        task.name,
+        task.project,
+        task.contact,
+        task.status,
+        task.recurrence,
+        dateLabel,
+      ].join(' ');
+      if (_matchesTokens(tokens, taskText)) {
+        final matchedFields = _collectMatchedFields(tokens, [
+          MapEntry('Nom', task.name),
+          MapEntry('Projet', task.project),
+          MapEntry('Contact', task.contact),
+          MapEntry('Statut', task.status),
+          MapEntry('Récurrence', task.recurrence),
+          MapEntry('Date', dateLabel),
+        ]);
+        results.add(
+          _GlobalSearchResult(
+            category: 'Tache',
+            title: task.name,
+            subtitle:
+                '$dateLabel - ${task.project.isEmpty ? 'Sans projet' : task.project}',
+            matchedFields: matchedFields,
+            onTap: () {
+              _openTaskEditor(task);
+            },
+          ),
+        );
       }
-      final content = await file.readAsString();
-      if (!mounted) {
-        return;
+    }
+
+    for (final project in _projects) {
+      final projectText = [
+        project.name,
+        project.description,
+        project.status,
+      ].join(' ');
+      if (_matchesTokens(tokens, projectText)) {
+        final matchedFields = _collectMatchedFields(tokens, [
+          MapEntry('Nom', project.name),
+          MapEntry('Description', project.description),
+          MapEntry('Statut', project.status),
+        ]);
+        results.add(
+          _GlobalSearchResult(
+            category: 'Projet',
+            title: project.name,
+            subtitle: project.description.isEmpty
+                ? project.status
+                : '${project.status} - ${project.description}',
+            matchedFields: matchedFields,
+            onTap: () {
+              _openProjectEditor(project);
+            },
+          ),
+        );
       }
-      setState(() {
-        _headerPostItController.text = content;
-      });
-    } catch (_) {}
+    }
+
+    for (final entry in _weekNotesByWeekKey.entries) {
+      final noteText = '${entry.key} ${entry.value}';
+      if (_matchesTokens(tokens, noteText)) {
+        final compact = entry.value.replaceAll('\n', ' ').trim();
+        final parsedWeek = DateTime.tryParse(entry.key);
+        final weekKey = entry.key;
+        final matchedFields = _collectMatchedFields(tokens, [
+          MapEntry('Semaine', entry.key),
+          MapEntry('Note', entry.value),
+        ]);
+        results.add(
+          _GlobalSearchResult(
+            category: 'Note',
+            title: 'Semaine ${entry.key}',
+            subtitle: compact.isEmpty
+                ? 'Note vide'
+                : (compact.length > 110
+                      ? '${compact.substring(0, 110)}...'
+                      : compact),
+            matchedFields: matchedFields,
+            onTap: parsedWeek == null
+                ? null
+                : () {
+                    setState(() {
+                      _currentView = MainView.planning;
+                      _planningAnchorDate = parsedWeek;
+                    });
+                    _syncWeekNotesControllerForDate(_planningAnchorDate);
+                  },
+            noteContent: entry.value,
+            onNoteChanged: (newValue) {
+              setState(() {
+                if (newValue.trim().isEmpty) {
+                  _weekNotesByWeekKey.remove(weekKey);
+                } else {
+                  _weekNotesByWeekKey[weekKey] = newValue;
+                }
+              });
+              _saveWeekNotes();
+              _syncWeekNotesControllerForDate(_planningAnchorDate);
+            },
+          ),
+        );
+      }
+    }
+
+    return results;
   }
 
-  void _clearHeaderPostIt() {
-    setState(() {
-      _headerPostItController.clear();
-    });
-  }
-
-  Future<void> _saveHeaderPostIt() async {
-    if (kIsWeb) {
+  void _openSearchResultsPage() {
+    final query = _headerSearchController.text.trim();
+    if (query.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Sauvegarde fichier indisponible sur le web.'),
+          content: Text('Entre des mots pour lancer la recherche.'),
         ),
       );
       return;
     }
 
-    try {
-      final file = await _headerPostItFile();
-      await file.writeAsString(_headerPostItController.text.trimRight());
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Post-it enregistre dans ${file.path}')),
-      );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Echec de la sauvegarde du post-it.')),
-      );
-    }
+    final results = _buildGlobalSearchResults(query);
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) =>
+            _SearchResultsPage(query: query, results: results),
+      ),
+    );
   }
 
   Future<void> _openTaskEditor(TaskItem task, {bool isNew = false}) async {
@@ -1263,7 +1399,31 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
+    var controllersDisposed = false;
+    void disposeTaskControllers() {
+      if (controllersDisposed) {
+        return;
+      }
+      controllersDisposed = true;
+      nameController.dispose();
+      durationController.dispose();
+      contactController.dispose();
+    }
+
+    Future<void> closeDialogSafely(BuildContext dialogContext) async {
+      final navigator = Navigator.of(dialogContext);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      if (!mounted) {
+        return;
+      }
+      if (navigator.canPop()) {
+        navigator.pop();
+      }
+    }
+
     if (!mounted) {
+      disposeTaskControllers();
       return;
     }
 
@@ -1779,12 +1939,12 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                       if (!isNew)
                                         Expanded(
                                           child: OutlinedButton.icon(
-                                            onPressed: () {
+                                            onPressed: () async {
                                               setState(() {
                                                 _tasks.remove(task);
                                               });
                                               _saveTasks();
-                                              Navigator.of(context).pop();
+                                              await closeDialogSafely(context);
                                             },
                                             icon: const Icon(Icons.close),
                                             label: const Text('Supprimer'),
@@ -1792,15 +1952,16 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                         ),
                                       if (!isNew) const SizedBox(width: 10),
                                       TextButton(
-                                        onPressed: () =>
-                                            Navigator.of(context).pop(),
+                                        onPressed: () async {
+                                          await closeDialogSafely(context);
+                                        },
                                         child: const Text('Annuler'),
                                       ),
                                       const SizedBox(width: 10),
                                       Expanded(
                                         flex: 2,
                                         child: FilledButton(
-                                          onPressed: () {
+                                          onPressed: () async {
                                             if (!allDay) {
                                               syncMissingTimeFromDuration();
                                               syncDurationFromTimes();
@@ -1909,7 +2070,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                               }
                                             });
                                             _saveTasks();
-                                            Navigator.of(context).pop();
+                                            await closeDialogSafely(context);
                                           },
                                           child: const Text('Enregistrer'),
                                         ),
@@ -1931,10 +2092,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         );
       },
     );
-
-    nameController.dispose();
-    durationController.dispose();
-    contactController.dispose();
+    disposeTaskControllers();
   }
 
   Future<void> _openProjectEditor(ProjectItem project) async {
@@ -1951,7 +2109,30 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       return '${value.day.toString().padLeft(2, '0')}/${value.month.toString().padLeft(2, '0')}/${value.year}';
     }
 
+    var controllersDisposed = false;
+    void disposeProjectControllers() {
+      if (controllersDisposed) {
+        return;
+      }
+      controllersDisposed = true;
+      nameController.dispose();
+      descriptionController.dispose();
+    }
+
+    Future<void> closeDialogSafely(BuildContext dialogContext) async {
+      final navigator = Navigator.of(dialogContext);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      if (!mounted) {
+        return;
+      }
+      if (navigator.canPop()) {
+        navigator.pop();
+      }
+    }
+
     if (!mounted) {
+      disposeProjectControllers();
       return;
     }
 
@@ -2207,6 +2388,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                         selectedColor,
                                                       ),
                                                 );
+                                                await closeDialogSafely(
+                                                  context,
+                                                );
                                                 await _openTaskEditor(
                                                   newTask,
                                                   isNew: true,
@@ -2235,13 +2419,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                   child: Row(
                                     children: [
                                       TextButton(
-                                        onPressed: () =>
-                                            Navigator.of(context).pop(),
+                                        onPressed: () async {
+                                          await closeDialogSafely(context);
+                                        },
                                         child: const Text('Annuler'),
                                       ),
                                       const SizedBox(width: 6),
                                       TextButton(
-                                        onPressed: () {
+                                        onPressed: () async {
                                           setState(() {
                                             _projects.removeWhere(
                                               (item) => item.id == project.id,
@@ -2263,14 +2448,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           });
                                           _saveProjects();
                                           _saveTasks();
-                                          Navigator.of(context).pop();
+                                          await closeDialogSafely(context);
                                         },
                                         child: const Text('Supprimer'),
                                       ),
                                       const SizedBox(width: 6),
                                       Expanded(
                                         child: FilledButton(
-                                          onPressed: () {
+                                          onPressed: () async {
                                             final nextName =
                                                 nameController.text
                                                     .trim()
@@ -2301,7 +2486,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             });
                                             _saveProjects();
                                             _saveTasks();
-                                            Navigator.of(context).pop();
+                                            await closeDialogSafely(context);
                                           },
                                           child: const Text('Enregistrer'),
                                         ),
@@ -2323,9 +2508,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         );
       },
     );
-
-    nameController.dispose();
-    descriptionController.dispose();
+    disposeProjectControllers();
   }
 
   Widget _buildViewSwitcher() {
@@ -2390,36 +2573,33 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           ],
         ),
         const SizedBox(width: 12),
-        Expanded(child: _buildHeaderPostIt()),
+        Expanded(child: _buildHeaderSearch()),
       ],
     );
   }
 
-  Widget _buildHeaderPostIt() {
+  Widget _buildHeaderSearch() {
     return Container(
       height: 40,
       padding: const EdgeInsets.only(left: 10, right: 2),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF3BF),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFE6D08A)),
+        border: Border.all(color: Colors.black12),
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.sticky_note_2_outlined,
-            size: 16,
-            color: Colors.black54,
-          ),
+          const Icon(Icons.search, size: 16, color: Colors.black54),
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
-              controller: _headerPostItController,
+              controller: _headerSearchController,
               maxLines: 1,
-              textInputAction: TextInputAction.done,
+              textInputAction: TextInputAction.search,
+              onSubmitted: (_) => _openSearchResultsPage(),
               decoration: const InputDecoration(
                 isDense: true,
-                hintText: 'Post-it rapide... ',
+                hintText: 'Rechercher dans taches, projets et notes...',
                 border: InputBorder.none,
                 filled: false,
                 contentPadding: EdgeInsets.zero,
@@ -2427,16 +2607,24 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             ),
           ),
           IconButton(
-            onPressed: _clearHeaderPostIt,
-            tooltip: 'Effacer',
-            icon: const Icon(Icons.close, size: 17, color: Colors.black54),
+            onPressed: () {
+              setState(() {
+                _headerSearchController.clear();
+              });
+            },
+            tooltip: 'Effacer la recherche',
+            icon: const Icon(
+              Icons.close_rounded,
+              size: 17,
+              color: Colors.black54,
+            ),
             visualDensity: VisualDensity.compact,
           ),
           IconButton(
-            onPressed: _saveHeaderPostIt,
-            tooltip: 'Enregistrer dans un fichier',
+            onPressed: _openSearchResultsPage,
+            tooltip: 'Lancer la recherche',
             icon: const Icon(
-              Icons.save_outlined,
+              Icons.arrow_forward_rounded,
               size: 17,
               color: Colors.black54,
             ),
@@ -3003,50 +3191,81 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                               height: height < 34 ? 34 : height,
                               child: GestureDetector(
                                 onTap: () => _openTaskEditor(layout.task),
-                                child: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border(
-                                      left: BorderSide(
-                                        color: _taskMarkerColor(layout.task),
-                                        width: 1,
+                                child: LayoutBuilder(
+                                  builder: (context, cardConstraints) {
+                                    final compact =
+                                        cardConstraints.maxHeight < 58;
+
+                                    return Container(
+                                      padding: EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: compact ? 4 : 8,
                                       ),
-                                      top: BorderSide(
-                                        color: _taskMarkerColor(layout.task),
-                                        width: 1,
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border(
+                                          left: BorderSide(
+                                            color: _taskMarkerColor(
+                                              layout.task,
+                                            ),
+                                            width: 1,
+                                          ),
+                                          top: BorderSide(
+                                            color: _taskMarkerColor(
+                                              layout.task,
+                                            ),
+                                            width: 1,
+                                          ),
+                                          right: BorderSide(
+                                            color: _taskMarkerColor(
+                                              layout.task,
+                                            ),
+                                            width: 1,
+                                          ),
+                                          bottom: BorderSide(
+                                            color: _taskMarkerColor(
+                                              layout.task,
+                                            ),
+                                            width: 1,
+                                          ),
+                                        ),
                                       ),
-                                      right: BorderSide(
-                                        color: _taskMarkerColor(layout.task),
-                                        width: 1,
-                                      ),
-                                      bottom: BorderSide(
-                                        color: _taskMarkerColor(layout.task),
-                                        width: 1,
-                                      ),
-                                    ),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      _buildTaskNameWithRecurrenceIcon(
-                                        layout.task,
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        _timeRangeLabel(layout.task),
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ],
-                                  ),
+                                      child: compact
+                                          ? Align(
+                                              alignment: Alignment.centerLeft,
+                                              child:
+                                                  _buildTaskNameWithRecurrenceIcon(
+                                                    layout.task,
+                                                    style: Theme.of(
+                                                      context,
+                                                    ).textTheme.bodySmall,
+                                                  ),
+                                            )
+                                          : Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                _buildTaskNameWithRecurrenceIcon(
+                                                  layout.task,
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                ),
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                  _timeRangeLabel(layout.task),
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  maxLines: 1,
+                                                ),
+                                              ],
+                                            ),
+                                    );
+                                  },
                                 ),
                               ),
                             );
@@ -3496,6 +3715,191 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     return Scaffold(
       appBar: AppBar(centerTitle: false, title: _buildViewSwitcher()),
       body: Stack(children: [currentView, _buildReminderOverlay()]),
+    );
+  }
+}
+
+class _SearchResultsPage extends StatefulWidget {
+  const _SearchResultsPage({required this.query, required this.results});
+
+  final String query;
+  final List<_GlobalSearchResult> results;
+
+  @override
+  State<_SearchResultsPage> createState() => _SearchResultsPageState();
+}
+
+class _SearchResultsPageState extends State<_SearchResultsPage> {
+  List<String> get _tokens => widget.query
+      .toLowerCase()
+      .split(RegExp(r'\s+'))
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .toList();
+
+  List<TextSpan> _highlightedSpans(String text, TextStyle baseStyle) {
+    if (text.isEmpty || _tokens.isEmpty) {
+      return <TextSpan>[TextSpan(text: text, style: baseStyle)];
+    }
+
+    final lowerText = text.toLowerCase();
+    final ranges = <MapEntry<int, int>>[];
+    for (final token in _tokens) {
+      if (token.isEmpty) {
+        continue;
+      }
+      var start = 0;
+      while (true) {
+        final index = lowerText.indexOf(token, start);
+        if (index == -1) {
+          break;
+        }
+        ranges.add(MapEntry(index, index + token.length));
+        start = index + token.length;
+      }
+    }
+
+    if (ranges.isEmpty) {
+      return <TextSpan>[TextSpan(text: text, style: baseStyle)];
+    }
+
+    ranges.sort((a, b) => a.key.compareTo(b.key));
+    final merged = <MapEntry<int, int>>[];
+    for (final range in ranges) {
+      if (merged.isEmpty || range.key > merged.last.value) {
+        merged.add(range);
+        continue;
+      }
+      final last = merged.removeLast();
+      merged.add(
+        MapEntry(last.key, range.value > last.value ? range.value : last.value),
+      );
+    }
+
+    final spans = <TextSpan>[];
+    var cursor = 0;
+    for (final range in merged) {
+      if (range.key > cursor) {
+        spans.add(
+          TextSpan(text: text.substring(cursor, range.key), style: baseStyle),
+        );
+      }
+      spans.add(
+        TextSpan(
+          text: text.substring(range.key, range.value),
+          style: baseStyle.copyWith(fontWeight: FontWeight.w700),
+        ),
+      );
+      cursor = range.value;
+    }
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor), style: baseStyle));
+    }
+    return spans;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Resultats de recherche: "${widget.query}"')),
+      body: widget.results.isEmpty
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Text(
+                  'Aucun resultat pour "${widget.query}".',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(12),
+              itemCount: widget.results.length,
+              separatorBuilder: (context, index) => const SizedBox(height: 8),
+              itemBuilder: (context, index) {
+                final item = widget.results[index];
+                final bodyStyle =
+                    Theme.of(context).textTheme.bodyMedium ??
+                    const TextStyle(fontSize: 14);
+                return Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.black12),
+                  ),
+                  child: ListTile(
+                    title: Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: item.matchedFields
+                            .map(
+                              (field) => Padding(
+                                padding: const EdgeInsets.only(bottom: 4),
+                                child: Text.rich(
+                                  TextSpan(
+                                    style: bodyStyle,
+                                    children: [
+                                      TextSpan(
+                                        text: '${field.label}: ',
+                                        style: bodyStyle.copyWith(
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      ..._highlightedSpans(
+                                        field.value,
+                                        bodyStyle,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                    onTap: () {
+                      final noteContent = item.noteContent;
+                      if (noteContent != null) {
+                        final noteController = TextEditingController(
+                          text: noteContent,
+                        );
+                        noteController.addListener(() {
+                          item.onNoteChanged?.call(noteController.text);
+                        });
+                        showDialog<void>(
+                          context: context,
+                          builder: (dialogContext) {
+                            return AlertDialog(
+                              title: Text(item.title),
+                              content: SizedBox(
+                                width: 480,
+                                child: TextField(
+                                  controller: noteController,
+                                  maxLines: null,
+                                  minLines: 6,
+                                  autofocus: true,
+                                  keyboardType: TextInputType.multiline,
+                                  decoration: const InputDecoration(
+                                    hintText: 'Ecris ta note ici...',
+                                    border: OutlineInputBorder(),
+                                    contentPadding: EdgeInsets.all(10),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ).then((_) => noteController.dispose());
+                        return;
+                      }
+
+                      item.onTap?.call();
+                    },
+                  ),
+                );
+              },
+            ),
     );
   }
 }
