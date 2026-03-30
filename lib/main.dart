@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
+import 'package:flutter_localizations/flutter_localizations.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -36,7 +38,16 @@ class TamagoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(home: TodayPage());
+    return const MaterialApp(
+      locale: Locale('en', 'US'),
+      supportedLocales: [Locale('en', 'US')],
+      localizationsDelegates: [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      home: TodayPage(),
+    );
   }
 }
 
@@ -45,11 +56,11 @@ enum MainView { today, planning, projects }
 enum _TodayPane { tasks, timeline }
 
 enum TaskColorOption {
-  jaune('Jaune', Color(0xFFFFE79A)),
-  rouge('Rose corail', Color(0xFFFFB3C7)),
-  vert('Vert menthe', Color(0xFFBDECC8)),
-  bleu('Lilas', Color(0xFFC9C4FF)),
-  gris('Gris lavande', Color(0xFFE2DDEA)),
+  jaune('Yellow', Color(0xFFFFE79A)),
+  rouge('Coral pink', Color(0xFFFFB3C7)),
+  vert('Mint green', Color(0xFFBDECC8)),
+  bleu('Lilac', Color(0xFFC9C4FF)),
+  gris('Lavender gray', Color(0xFFE2DDEA)),
   violet('Violet', Color(0xFFE3B7FF));
 
   const TaskColorOption(this.label, this.color);
@@ -58,16 +69,112 @@ enum TaskColorOption {
 }
 
 enum ProjectColorOption {
-  jaune('Jaune', Color(0xFFFFE79A)),
-  vert('Vert menthe', Color(0xFFBDECC8)),
-  rouge('Rose corail', Color(0xFFFFB3C7)),
-  bleu('Lilas', Color(0xFFC9C4FF)),
-  gris('Gris lavande', Color(0xFFE2DDEA)),
-  marron('Pêche', Color(0xFFF1C9A6));
+  jaune('Yellow', Color(0xFFFFE79A)),
+  vert('Mint green', Color(0xFFBDECC8)),
+  rouge('Coral pink', Color(0xFFFFB3C7)),
+  bleu('Lilac', Color(0xFFC9C4FF)),
+  gris('Lavender gray', Color(0xFFE2DDEA)),
+  marron('Peach', Color(0xFFF1C9A6));
 
   const ProjectColorOption(this.label, this.color);
   final String label;
   final Color color;
+}
+
+String _normalizeStatus(String? rawStatus) {
+  final value = (rawStatus ?? '').trim();
+  switch (value) {
+    case 'To do':
+    case 'A faire':
+    case 'À faire':
+    case '� faire':
+      return 'To do';
+    case 'In progress':
+    case 'En cours':
+      return 'In progress';
+    case 'Done':
+    case 'Termine':
+    case 'Terminé':
+    case 'Termin�':
+      return 'Done';
+    default:
+      return value.isEmpty ? 'To do' : value;
+  }
+}
+
+String _normalizeWeekdayLabel(String rawWeekday) {
+  final value = rawWeekday.trim();
+  switch (value) {
+    case 'Monday':
+    case 'Lundi':
+      return 'Monday';
+    case 'Tuesday':
+    case 'Mardi':
+      return 'Tuesday';
+    case 'Wednesday':
+    case 'Mercredi':
+      return 'Wednesday';
+    case 'Thursday':
+    case 'Jeudi':
+      return 'Thursday';
+    case 'Friday':
+    case 'Vendredi':
+      return 'Friday';
+    case 'Saturday':
+    case 'Samedi':
+      return 'Saturday';
+    case 'Sunday':
+    case 'Dimanche':
+      return 'Sunday';
+    default:
+      return value;
+  }
+}
+
+String _normalizeRecurrence(String? rawRecurrence) {
+  final value = (rawRecurrence ?? '').trim();
+  if (value.isEmpty || value == 'Aucune' || value == 'Nonee') {
+    return 'None';
+  }
+  if (value == 'Daily' || value == 'Quotidienne') {
+    return 'Daily';
+  }
+  if (value == 'Weekly' || value == 'Hebdomadaire') {
+    return 'Weekly';
+  }
+  if (value == 'Monthly' || value == 'Mensuelle') {
+    return 'Monthly';
+  }
+  if (value.startsWith('Days:') || value.startsWith('Jours:')) {
+    final prefixLength = value.startsWith('Days:')
+        ? 'Days:'.length
+        : 'Jours:'.length;
+    final days = value
+        .substring(prefixLength)
+        .split(',')
+        .map((day) => _normalizeWeekdayLabel(day))
+        .where((day) => day.isNotEmpty)
+        .toList();
+    return days.isEmpty ? 'None' : 'Days:${days.join(',')}';
+  }
+  return value;
+}
+
+String _normalizeReminderOption(String rawOption) {
+  final value = rawOption.trim();
+  switch (value) {
+    case '1 day before':
+    case '1 jour avant':
+      return '1 day before';
+    case '1h before':
+    case '1h avant':
+      return '1h before';
+    case '10 min before':
+    case '10 min avant':
+      return '10 min before';
+    default:
+      return value;
+  }
 }
 
 class TaskItem {
@@ -79,9 +186,9 @@ class TaskItem {
     this.startTime,
     this.endTime,
     this.duration = '',
-    this.reminder = 'Aucun',
-    this.recurrence = 'Aucune',
-    this.status = 'À faire',
+    this.reminder = 'None',
+    this.recurrence = 'None',
+    this.status = 'To do',
     this.contact = '',
     this.project = '',
     this.projectId,
@@ -141,9 +248,9 @@ class TaskItem {
       startTime: _minutesToTime(json['startTime'] as int?),
       endTime: _minutesToTime(json['endTime'] as int?),
       duration: (json['duration'] as String?) ?? '',
-      reminder: (json['reminder'] as String?) ?? 'Aucun',
-      recurrence: (json['recurrence'] as String?) ?? 'Aucune',
-      status: (json['status'] as String?) ?? 'À faire',
+      reminder: (json['reminder'] as String?) ?? 'None',
+      recurrence: _normalizeRecurrence(json['recurrence'] as String?),
+      status: _normalizeStatus(json['status'] as String?),
       contact: (json['contact'] as String?) ?? '',
       project: (json['project'] as String?) ?? '',
       projectId: json['projectId'] as String?,
@@ -230,7 +337,7 @@ class ProjectItem {
     DateTime? startDate,
     this.endDate,
     this.description = '',
-    this.status = 'À faire',
+    this.status = 'To do',
     this.color = ProjectColorOption.bleu,
   }) : startDate = startDate ?? createdAt;
 
@@ -275,12 +382,12 @@ class ProjectItem {
       id:
           (json['id'] as String?) ??
           DateTime.now().millisecondsSinceEpoch.toString(),
-      name: (json['name'] as String?) ?? 'Projet',
+      name: (json['name'] as String?) ?? 'Project',
       createdAt: createdAt,
       startDate: startDate,
       endDate: endDate,
       description: (json['description'] as String?) ?? '',
-      status: (json['status'] as String?) ?? 'À faire',
+      status: _normalizeStatus(json['status'] as String?),
       color: resolvedColor,
     );
   }
@@ -302,7 +409,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       child: todayTasks.isEmpty
           ? Center(
               child: Text(
-                'Aucune tâche pour aujourd’hui.',
+                'No tasks for today.',
                 style: Theme.of(context).textTheme.bodyLarge,
               ),
             )
@@ -343,20 +450,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final today = _dateOnly(DateTime.now());
     for (final task in _tasks) {
       if (_isRecurringTask(task) &&
-          task.status == 'Terminé' &&
+          task.status == 'Done' &&
           !_isSameDay(task.date, today)) {
-        task.status = 'À faire';
+        task.status = 'To do';
       }
     }
   }
 
   Duration? _reminderOffset(String option) {
-    switch (option) {
-      case '1 jour avant':
+    switch (_normalizeReminderOption(option)) {
+      case '1 day before':
         return const Duration(days: 1);
-      case '1h avant':
+      case '1h before':
         return const Duration(hours: 1);
-      case '10 min avant':
+      case '10 min before':
         return const Duration(minutes: 10);
       default:
         return null;
@@ -364,7 +471,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   String _encodeReminderSelections(Set<String> selections) {
-    if (selections.isEmpty) return 'Aucun';
+    if (selections.isEmpty) return 'None';
     return selections.join(' | ');
   }
 
@@ -396,9 +503,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     'tamago/widget',
   );
   static const List<String> _reminderOptions = <String>[
-    '1 jour avant',
-    '1h avant',
-    '10 min avant',
+    '1 day before',
+    '1h before',
+    '10 min before',
   ];
 
   final TextEditingController _quickAddTaskController = TextEditingController();
@@ -485,14 +592,17 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   List<String> _parseReminderSelections(String rawReminder) {
     final trimmed = rawReminder.trim();
-    if (trimmed.isEmpty || trimmed == 'Aucun') {
+    if (trimmed.isEmpty || trimmed == 'None') {
       return const <String>[];
     }
     final tokens = trimmed
         .split(RegExp(r'\||,'))
         .map((value) => value.trim())
-        .where((value) => value.isNotEmpty && value != 'Aucun');
-    return tokens.toList();
+        .where((value) => value.isNotEmpty && value != 'None')
+        .map(_normalizeReminderOption)
+        .where((value) => value != 'None')
+        .toList();
+    return tokens;
   }
 
   String _reminderId(
@@ -551,7 +661,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 id: reminderId,
                 title: task.name,
                 subtitle:
-                    'Rappel $reminderOption • ${_twoDigits(occurrenceDate.day)}/${_twoDigits(occurrenceDate.month)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
+                    'Reminder ${_normalizeReminderOption(reminderOption)} - ${_twoDigits(occurrenceDate.day)}/${_twoDigits(occurrenceDate.month)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
               ),
             );
           }
@@ -579,21 +689,21 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     });
   }
 
-  int? _weekdayFromFrenchLabel(String label) {
+  int? _weekdayFromLabel(String label) {
     switch (label) {
-      case 'Lundi':
+      case 'Monday':
         return DateTime.monday;
-      case 'Mardi':
+      case 'Tuesday':
         return DateTime.tuesday;
-      case 'Mercredi':
+      case 'Wednesday':
         return DateTime.wednesday;
-      case 'Jeudi':
+      case 'Thursday':
         return DateTime.thursday;
-      case 'Vendredi':
+      case 'Friday':
         return DateTime.friday;
-      case 'Samedi':
+      case 'Saturday':
         return DateTime.saturday;
-      case 'Dimanche':
+      case 'Sunday':
         return DateTime.sunday;
       default:
         return null;
@@ -612,28 +722,28 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     }
 
     switch (task.recurrence) {
-      case 'Aucune':
+      case 'None':
         return !day.isBefore(taskDate) && !day.isAfter(taskEndDate);
-      case 'Quotidienne':
+      case 'Daily':
         return !day.isBefore(taskDate) && !day.isAfter(taskEndDate);
-      case 'Mensuelle':
+      case 'Monthly':
         return !day.isBefore(taskDate) &&
             !day.isAfter(taskEndDate) &&
             day.day == taskDate.day;
-      case 'Hebdomadaire':
+      case 'Weekly':
         return !day.isBefore(taskDate) &&
             !day.isAfter(taskEndDate) &&
             day.weekday == taskDate.weekday;
       default:
-        if (task.recurrence.startsWith('Jours:')) {
+        if (task.recurrence.startsWith('Days:')) {
           final rawDays = task.recurrence
-              .substring('Jours:'.length)
+              .substring('Days:'.length)
               .split(',')
               .map((value) => value.trim())
               .where((value) => value.isNotEmpty)
               .toList();
           final weekdays = rawDays
-              .map(_weekdayFromFrenchLabel)
+              .map(_weekdayFromLabel)
               .whereType<int>()
               .toSet();
           return !day.isBefore(taskDate) &&
@@ -679,7 +789,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   String _dayLabel(DateTime date) {
-    const labels = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+    const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     return labels[date.weekday - 1];
   }
 
@@ -689,13 +799,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   String _timeRangeLabel(TaskItem task) {
     if (task.startTime == null || task.endTime == null) {
-      return 'Sans horaire';
+      return 'No time set';
     }
     return '${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)} - ${_twoDigits(task.endTime!.hour)}:${_twoDigits(task.endTime!.minute)}';
   }
 
   bool _isRecurringTask(TaskItem task) {
-    return task.recurrence != 'Aucune';
+    return task.recurrence != 'None';
   }
 
   Widget _buildTaskNameWithRecurrenceIcon(
@@ -725,28 +835,28 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   Future<void> _openNewTaskForDate(DateTime date) async {
-    final newTask = TaskItem(name: 'Nouvelle tache', date: _dateOnly(date));
+    final newTask = TaskItem(name: 'New task', date: _dateOnly(date));
     await _openTaskEditor(newTask, isNew: true);
   }
 
   String _nextStatus(String currentStatus) {
     switch (currentStatus) {
-      case 'À faire':
-        return 'En cours';
-      case 'En cours':
-        return 'Terminé';
-      case 'Terminé':
-        return 'À faire';
+      case 'To do':
+        return 'In progress';
+      case 'In progress':
+        return 'Done';
+      case 'Done':
+        return 'To do';
       default:
-        return 'À faire';
+        return 'To do';
     }
   }
 
   IconData _statusIcon(String status) {
     switch (status) {
-      case 'En cours':
+      case 'In progress':
         return Icons.timelapse_rounded;
-      case 'Terminé':
+      case 'Done':
         return Icons.check_circle_rounded;
       default:
         return Icons.radio_button_unchecked_rounded;
@@ -756,7 +866,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   List<TaskItem> get _todayTasks {
     return _tasksForDate(
       _todayOnly,
-    ).where((task) => task.status != 'Terminé').toList();
+    ).where((task) => task.status != 'Done').toList();
   }
 
   ProjectItem? get _selectedProject {
@@ -1156,19 +1266,19 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       ].join(' ');
       if (_matchesTokens(tokens, taskText)) {
         final matchedFields = _collectMatchedFields(tokens, [
-          MapEntry('Nom', task.name),
-          MapEntry('Projet', task.project),
+          MapEntry('Name', task.name),
+          MapEntry('Project', task.project),
           MapEntry('Contact', task.contact),
-          MapEntry('Statut', task.status),
-          MapEntry('Récurrence', task.recurrence),
+          MapEntry('Status', task.status),
+          MapEntry('Recurrence', task.recurrence),
           MapEntry('Date', dateLabel),
         ]);
         results.add(
           _GlobalSearchResult(
-            category: 'Tache',
+            category: 'Task',
             title: task.name,
             subtitle:
-                '$dateLabel - ${task.project.isEmpty ? 'Sans projet' : task.project}',
+                '$dateLabel - ${task.project.isEmpty ? 'No project' : task.project}',
             matchedFields: matchedFields,
             onTap: () {
               _openTaskEditor(task);
@@ -1186,13 +1296,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       ].join(' ');
       if (_matchesTokens(tokens, projectText)) {
         final matchedFields = _collectMatchedFields(tokens, [
-          MapEntry('Nom', project.name),
+          MapEntry('Name', project.name),
           MapEntry('Description', project.description),
-          MapEntry('Statut', project.status),
+          MapEntry('Status', project.status),
         ]);
         results.add(
           _GlobalSearchResult(
-            category: 'Projet',
+            category: 'Project',
             title: project.name,
             subtitle: project.description.isEmpty
                 ? project.status
@@ -1213,15 +1323,15 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         final parsedWeek = DateTime.tryParse(entry.key);
         final weekKey = entry.key;
         final matchedFields = _collectMatchedFields(tokens, [
-          MapEntry('Semaine', entry.key),
+          MapEntry('Week', entry.key),
           MapEntry('Note', entry.value),
         ]);
         results.add(
           _GlobalSearchResult(
             category: 'Note',
-            title: 'Semaine ${entry.key}',
+            title: 'Week ${entry.key}',
             subtitle: compact.isEmpty
-                ? 'Note vide'
+                ? 'Empty note'
                 : (compact.length > 110
                       ? '${compact.substring(0, 110)}...'
                       : compact),
@@ -1259,9 +1369,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final query = _headerSearchController.text.trim();
     if (query.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Entre des mots pour lancer la recherche.'),
-        ),
+        const SnackBar(content: Text('Enter keywords to start searching.')),
       );
       return;
     }
@@ -1292,29 +1400,29 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     String recurrence = task.recurrence;
     String status = task.status;
     const weekdays = <String>[
-      'Lundi',
-      'Mardi',
-      'Mercredi',
-      'Jeudi',
-      'Vendredi',
-      'Samedi',
-      'Dimanche',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
     ];
 
-    String recurrenceMode = 'Aucune';
+    String recurrenceMode = 'None';
     final selectedWeekdays = <String>{};
 
-    if (recurrence == 'Quotidienne' ||
-        recurrence == 'Mensuelle' ||
-        recurrence == 'Aucune') {
+    if (recurrence == 'Daily' ||
+        recurrence == 'Monthly' ||
+        recurrence == 'None') {
       recurrenceMode = recurrence;
-    } else if (recurrence == 'Hebdomadaire') {
-      recurrenceMode = 'Jours de la semaine';
+    } else if (recurrence == 'Weekly') {
+      recurrenceMode = 'Weekdays';
       selectedWeekdays.add(weekdays[selectedDate.weekday - 1]);
-    } else if (recurrence.startsWith('Jours:')) {
-      recurrenceMode = 'Jours de la semaine';
+    } else if (recurrence.startsWith('Days:')) {
+      recurrenceMode = 'Weekdays';
       final rawDays = recurrence
-          .substring('Jours:'.length)
+          .substring('Days:'.length)
           .split(',')
           .map((day) => day.trim())
           .where((day) => day.isNotEmpty);
@@ -1531,19 +1639,19 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             }
 
             const recurrenceOptions = <String>{
-              'Aucune',
-              'Quotidienne',
-              'Jours de la semaine',
-              'Mensuelle',
+              'None',
+              'Daily',
+              'Weekdays',
+              'Monthly',
             };
-            const statusOptions = <String>{'À faire', 'En cours', 'Terminé'};
+            const statusOptions = <String>{'To do', 'In progress', 'Done'};
             final effectiveRecurrenceMode =
                 recurrenceOptions.contains(recurrenceMode)
                 ? recurrenceMode
-                : 'Aucune';
+                : 'None';
             final effectiveStatus = statusOptions.contains(status)
                 ? status
-                : 'À faire';
+                : 'To do';
             final effectiveSelectedProjectId =
                 selectedProjectId.isEmpty ||
                     _projects.any((project) => project.id == selectedProjectId)
@@ -1635,7 +1743,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           TextField(
                                             controller: nameController,
                                             decoration: const InputDecoration(
-                                              labelText: 'Nom',
+                                              labelText: 'Name',
+                                            ),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          TextField(
+                                            controller: contactController,
+                                            decoration: const InputDecoration(
+                                              labelText: 'Contact',
                                             ),
                                           ),
                                           const SizedBox(height: 12),
@@ -1646,7 +1761,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                   contentPadding:
                                                       EdgeInsets.zero,
                                                   title: const Text(
-                                                    'Date debut',
+                                                    'Start date',
                                                   ),
                                                   subtitle: Text(
                                                     '${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}',
@@ -1662,7 +1777,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 child: ListTile(
                                                   contentPadding:
                                                       EdgeInsets.zero,
-                                                  title: const Text('Date fin'),
+                                                  title: const Text('End date'),
                                                   subtitle: Text(
                                                     '${selectedEndDate.day.toString().padLeft(2, '0')}/${selectedEndDate.month.toString().padLeft(2, '0')}/${selectedEndDate.year}',
                                                   ),
@@ -1700,7 +1815,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                       ? null
                                                       : pickStartTime,
                                                   child: Text(
-                                                    'Heure début: ${timeLabel(startTime)}',
+                                                    'Start time: ${timeLabel(startTime)}',
                                                   ),
                                                 ),
                                               ),
@@ -1711,7 +1826,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                       ? null
                                                       : pickEndTime,
                                                   child: Text(
-                                                    'Heure fin: ${timeLabel(endTime)}',
+                                                    'End time: ${timeLabel(endTime)}',
                                                   ),
                                                 ),
                                               ),
@@ -1722,7 +1837,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                       durationController,
                                                   decoration:
                                                       const InputDecoration(
-                                                        labelText: 'Durée',
+                                                        labelText: 'Duration',
                                                       ),
                                                   onChanged: (value) {
                                                     if (isInternalDurationUpdate ||
@@ -1744,7 +1859,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 CrossAxisAlignment.start,
                                             children: [
                                               Text(
-                                                'Rappel',
+                                                'Reminder',
                                                 style: Theme.of(
                                                   context,
                                                 ).textTheme.titleSmall,
@@ -1780,8 +1895,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                               const SizedBox(height: 6),
                                               Text(
                                                 selectedReminders.isEmpty
-                                                    ? 'Aucun rappel selectionne'
-                                                    : '${selectedReminders.length} rappel(s) selectionne(s)',
+                                                    ? 'No reminder selected'
+                                                    : '${selectedReminders.length} reminder(s) selected',
                                                 style: Theme.of(
                                                   context,
                                                 ).textTheme.bodySmall,
@@ -1793,34 +1908,31 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             initialValue:
                                                 effectiveRecurrenceMode,
                                             decoration: const InputDecoration(
-                                              labelText: 'Récurrence',
+                                              labelText: 'Recurrence',
                                             ),
                                             items: const [
                                               DropdownMenuItem(
-                                                value: 'Aucune',
-                                                child: Text('Aucune'),
+                                                value: 'None',
+                                                child: Text('None'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Quotidienne',
-                                                child: Text('Quotidienne'),
+                                                value: 'Daily',
+                                                child: Text('Daily'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Jours de la semaine',
-                                                child: Text(
-                                                  'Jours de la semaine',
-                                                ),
+                                                value: 'Weekdays',
+                                                child: Text('Weekdays'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Mensuelle',
-                                                child: Text('Mensuelle'),
+                                                value: 'Monthly',
+                                                child: Text('Monthly'),
                                               ),
                                             ],
                                             onChanged: (value) {
                                               if (value != null) {
                                                 setModalState(() {
                                                   recurrenceMode = value;
-                                                  if (value !=
-                                                      'Jours de la semaine') {
+                                                  if (value != 'Weekdays') {
                                                     selectedWeekdays.clear();
                                                   }
                                                 });
@@ -1828,7 +1940,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             },
                                           ),
                                           if (effectiveRecurrenceMode ==
-                                              'Jours de la semaine') ...[
+                                              'Weekdays') ...[
                                             const SizedBox(height: 8),
                                             Wrap(
                                               spacing: 8,
@@ -1862,20 +1974,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           DropdownButtonFormField<String>(
                                             initialValue: effectiveStatus,
                                             decoration: const InputDecoration(
-                                              labelText: 'Statut',
+                                              labelText: 'Status',
                                             ),
                                             items: const [
                                               DropdownMenuItem(
-                                                value: 'À faire',
-                                                child: Text('À faire'),
+                                                value: 'To do',
+                                                child: Text('To do'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'En cours',
-                                                child: Text('En cours'),
+                                                value: 'In progress',
+                                                child: Text('In progress'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Terminé',
-                                                child: Text('Terminé'),
+                                                value: 'Done',
+                                                child: Text('Done'),
                                               ),
                                             ],
                                             onChanged: (value) {
@@ -1887,23 +1999,16 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             },
                                           ),
                                           const SizedBox(height: 12),
-                                          TextField(
-                                            controller: contactController,
-                                            decoration: const InputDecoration(
-                                              labelText: 'Contact',
-                                            ),
-                                          ),
-                                          const SizedBox(height: 12),
                                           DropdownButtonFormField<String>(
                                             initialValue:
                                                 effectiveSelectedProjectId,
                                             decoration: const InputDecoration(
-                                              labelText: 'Projet',
+                                              labelText: 'Project',
                                             ),
                                             items: [
                                               const DropdownMenuItem(
                                                 value: '',
-                                                child: Text('Aucun'),
+                                                child: Text('None'),
                                               ),
                                               ..._projects.map(
                                                 (project) => DropdownMenuItem(
@@ -1947,7 +2052,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                               await closeDialogSafely(context);
                                             },
                                             icon: const Icon(Icons.close),
-                                            label: const Text('Supprimer'),
+                                            label: const Text('Delete'),
                                           ),
                                         ),
                                       if (!isNew) const SizedBox(width: 10),
@@ -1955,7 +2060,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                         onPressed: () async {
                                           await closeDialogSafely(context);
                                         },
-                                        child: const Text('Annuler'),
+                                        child: const Text('Cancel'),
                                       ),
                                       const SizedBox(width: 10),
                                       Expanded(
@@ -1977,7 +2082,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                   (durationMinutes == null ||
                                                       durationMinutes <= 0)) {
                                                 showValidationMessage(
-                                                  'La durée doit être positive (ex: 01:30).',
+                                                  'Duration must be positive (e.g., 01:30).',
                                                 );
                                                 return;
                                               }
@@ -1993,7 +2098,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 if (endMinutes <=
                                                     startMinutes) {
                                                   showValidationMessage(
-                                                    'Heure fin doit être après heure début.',
+                                                    'End time must be after start time.',
                                                   );
                                                   return;
                                                 }
@@ -2033,15 +2138,15 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                     selectedReminders,
                                                   );
                                               if (recurrenceMode ==
-                                                  'Jours de la semaine') {
+                                                  'Weekdays') {
                                                 final orderedDays = weekdays
                                                     .where(
                                                       (day) => selectedWeekdays
                                                           .contains(day),
                                                     );
                                                 recurrence = orderedDays.isEmpty
-                                                    ? 'Aucune'
-                                                    : 'Jours:${orderedDays.join(',')}';
+                                                    ? 'None'
+                                                    : 'Days:${orderedDays.join(',')}';
                                               } else {
                                                 recurrence = recurrenceMode;
                                               }
@@ -2072,7 +2177,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             _saveTasks();
                                             await closeDialogSafely(context);
                                           },
-                                          child: const Text('Enregistrer'),
+                                          child: const Text('Save'),
                                         ),
                                       ),
                                     ],
@@ -2172,10 +2277,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               }
             }
 
-            const statusOptions = <String>{'À faire', 'En cours', 'Terminé'};
+            const statusOptions = <String>{'To do', 'In progress', 'Done'};
             final effectiveStatus = statusOptions.contains(status)
                 ? status
-                : 'À faire';
+                : 'To do';
 
             return Material(
               type: MaterialType.transparency,
@@ -2260,7 +2365,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           Text(
-                                            'Édition du projet',
+                                            'Edit project',
                                             style: Theme.of(
                                               context,
                                             ).textTheme.titleLarge,
@@ -2269,13 +2374,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           TextField(
                                             controller: nameController,
                                             decoration: const InputDecoration(
-                                              labelText: 'Nom',
+                                              labelText: 'Name',
                                             ),
                                           ),
                                           const SizedBox(height: 12),
                                           ListTile(
                                             contentPadding: EdgeInsets.zero,
-                                            title: const Text('Date de début'),
+                                            title: const Text('Start date'),
                                             subtitle: Text(
                                               formatDate(startDate),
                                             ),
@@ -2286,10 +2391,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           ),
                                           ListTile(
                                             contentPadding: EdgeInsets.zero,
-                                            title: const Text('Date de fin'),
+                                            title: const Text('End date'),
                                             subtitle: Text(
                                               endDate == null
-                                                  ? 'Non définie'
+                                                  ? 'Not set'
                                                   : formatDate(endDate!),
                                             ),
                                             trailing: const Icon(
@@ -2310,20 +2415,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           DropdownButtonFormField<String>(
                                             initialValue: effectiveStatus,
                                             decoration: const InputDecoration(
-                                              labelText: 'Statut',
+                                              labelText: 'Status',
                                             ),
                                             items: const [
                                               DropdownMenuItem(
-                                                value: 'À faire',
-                                                child: Text('À faire'),
+                                                value: 'To do',
+                                                child: Text('To do'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'En cours',
-                                                child: Text('En cours'),
+                                                value: 'In progress',
+                                                child: Text('In progress'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Terminé',
-                                                child: Text('Terminé'),
+                                                value: 'Done',
+                                                child: Text('Done'),
                                               ),
                                             ],
                                             onChanged: (value) {
@@ -2336,7 +2441,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           ),
                                           const SizedBox(height: 14),
                                           Text(
-                                            'Couleur',
+                                            'Color',
                                             style: Theme.of(
                                               context,
                                             ).textTheme.titleMedium,
@@ -2379,7 +2484,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                     : nameController.text
                                                           .trim();
                                                 final newTask = TaskItem(
-                                                  name: 'Nouvelle tâche',
+                                                  name: 'New task',
                                                   date: _todayOnly,
                                                   project: projectName,
                                                   projectId: project.id,
@@ -2397,9 +2502,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 );
                                               },
                                               icon: const Icon(Icons.add_task),
-                                              label: const Text(
-                                                'Ajouter une tâche',
-                                              ),
+                                              label: const Text('Add a task'),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
@@ -2422,7 +2525,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                         onPressed: () async {
                                           await closeDialogSafely(context);
                                         },
-                                        child: const Text('Annuler'),
+                                        child: const Text('Cancel'),
                                       ),
                                       const SizedBox(width: 6),
                                       TextButton(
@@ -2450,7 +2553,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           _saveTasks();
                                           await closeDialogSafely(context);
                                         },
-                                        child: const Text('Supprimer'),
+                                        child: const Text('Delete'),
                                       ),
                                       const SizedBox(width: 6),
                                       Expanded(
@@ -2488,7 +2591,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             _saveTasks();
                                             await closeDialogSafely(context);
                                           },
-                                          child: const Text('Enregistrer'),
+                                          child: const Text('Save'),
                                         ),
                                       ),
                                     ],
@@ -2556,7 +2659,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             ),
             const SizedBox(width: 6),
             Tooltip(
-              message: 'Semaine',
+              message: 'Week',
               child: buildButton(
                 icon: Icons.calendar_view_week_rounded,
                 view: MainView.planning,
@@ -2564,7 +2667,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             ),
             const SizedBox(width: 6),
             Tooltip(
-              message: 'Projets',
+              message: 'Projects',
               child: buildButton(
                 icon: Icons.rocket_launch_rounded,
                 view: MainView.projects,
@@ -2599,7 +2702,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               onSubmitted: (_) => _openSearchResultsPage(),
               decoration: const InputDecoration(
                 isDense: true,
-                hintText: 'Rechercher dans taches, projets et notes...',
+                hintText: 'Search tasks, projects, and notes...',
                 border: InputBorder.none,
                 filled: false,
                 contentPadding: EdgeInsets.zero,
@@ -2612,7 +2715,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 _headerSearchController.clear();
               });
             },
-            tooltip: 'Effacer la recherche',
+            tooltip: 'Clear search',
             icon: const Icon(
               Icons.close_rounded,
               size: 17,
@@ -2622,7 +2725,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           ),
           IconButton(
             onPressed: _openSearchResultsPage,
-            tooltip: 'Lancer la recherche',
+            tooltip: 'Run search',
             icon: const Icon(
               Icons.arrow_forward_rounded,
               size: 17,
@@ -2655,7 +2758,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           leading: IconButton(
             onPressed: () => _cycleTaskStatus(task),
             icon: Icon(_statusIcon(task.status), color: _taskMarkerColor(task)),
-            tooltip: 'Changer le statut',
+            tooltip: 'Change status',
           ),
           title: _buildTaskNameWithRecurrenceIcon(
             task,
@@ -2686,13 +2789,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           const Spacer(),
           IconButton(
             onPressed: onCollapsePressed,
-            tooltip: collapsed ? 'Afficher' : 'Réduire',
+            tooltip: collapsed ? 'Show' : 'Collapse',
             icon: Icon(collapsed ? Icons.unfold_more : Icons.unfold_less),
             visualDensity: VisualDensity.compact,
           ),
           IconButton(
             onPressed: onExpandPressed,
-            tooltip: expanded ? 'Quitter plein écran' : 'Plein écran',
+            tooltip: expanded ? 'Exit full screen' : 'Full screen',
             icon: Icon(expanded ? Icons.fullscreen_exit : Icons.open_in_full),
             visualDensity: VisualDensity.compact,
           ),
@@ -2714,7 +2817,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               child: tasksForToday.isEmpty
                   ? Center(
                       child: Text(
-                        'Aucune tâche pour aujourd’hui.',
+                        'No tasks for today.',
                         style: Theme.of(context).textTheme.bodyLarge,
                       ),
                     )
@@ -2770,11 +2873,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _addTaskFromPrompt(),
             decoration: InputDecoration(
-              hintText: 'Entrer le nom de la nouvelle tâche…',
+              hintText: 'Enter the new task name...',
               suffixIcon: IconButton(
                 onPressed: _addTaskFromPrompt,
                 icon: const Icon(Icons.add),
-                tooltip: 'Ajouter',
+                tooltip: 'Add',
               ),
             ),
           ),
@@ -2826,7 +2929,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                       _statusIcon(project.status),
                       color: project.color.color,
                     ),
-                    tooltip: 'Changer le statut',
+                    tooltip: 'Change status',
                   ),
                   Expanded(
                     child: GestureDetector(
@@ -2853,9 +2956,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                         }
                       });
                     },
-                    tooltip: isExpanded
-                        ? 'Masquer les tâches'
-                        : 'Afficher les tâches',
+                    tooltip: isExpanded ? 'Hide tasks' : 'Show tasks',
                     icon: Icon(
                       isExpanded ? Icons.expand_less : Icons.expand_more,
                     ),
@@ -2868,7 +2969,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                   child: projectTasks.isEmpty
                       ? Text(
-                          'Aucune tâche pour ce projet.',
+                          'No tasks for this project.',
                           style: Theme.of(context).textTheme.bodySmall,
                         )
                       : Column(
@@ -2898,11 +2999,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _addProjectFromPrompt(),
             decoration: InputDecoration(
-              hintText: 'Entrer le nom du nouveau projet…',
+              hintText: 'Enter the new project name...',
               suffixIcon: IconButton(
                 onPressed: _addProjectFromPrompt,
                 icon: const Icon(Icons.add),
-                tooltip: 'Ajouter le projet',
+                tooltip: 'Add project',
               ),
             ),
           ),
@@ -2913,12 +3014,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               textInputAction: TextInputAction.done,
               onSubmitted: (_) => _addTaskToSelectedProjectFromPrompt(),
               decoration: InputDecoration(
-                hintText:
-                    'Ajouter une tâche au projet "${selectedProject.name}"…',
+                hintText: 'Add a task to project "${selectedProject.name}"...',
                 suffixIcon: IconButton(
                   onPressed: _addTaskToSelectedProjectFromPrompt,
                   icon: const Icon(Icons.add_task_outlined),
-                  tooltip: 'Ajouter la tâche au projet',
+                  tooltip: 'Add task to project',
                 ),
               ),
             ),
@@ -2927,7 +3027,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             child: _projects.isEmpty
                 ? Center(
                     child: Text(
-                      'Aucun projet disponible.',
+                      'No project available.',
                       style: Theme.of(context).textTheme.bodyLarge,
                     ),
                   )
@@ -2937,7 +3037,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'Projet sélectionné: ${selectedProject.name} (${selectedProjectTasks.length} tâche(s))',
+                'Selected project: ${selectedProject.name} (${selectedProjectTasks.length} task(s))',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
@@ -3086,8 +3186,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
-    // Force la plage horaire à inclure l'heure actuelle
-    // Toujours élargir la plage pour inclure l'heure actuelle
+    // Force la plage horaire � inclure l'heure actuelle
+    // Toujours �largir la plage pour inclure l'heure actuelle
     final forcedMin = nowMinutes - 180;
     final forcedMax = nowMinutes + 180;
     final minMinutes = firstStart < forcedMin ? firstStart : forcedMin;
@@ -3325,7 +3425,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
-                  'Aucune tache planifiee pour cette journee.',
+                  'No tasks scheduled for this day.',
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
               ),
@@ -3381,7 +3481,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                           maxLines: null,
                           textAlignVertical: TextAlignVertical.top,
                           decoration: const InputDecoration(
-                            hintText: 'Ecris tes notes de semaine...',
+                            hintText: 'Write your weekly notes...',
                             border: InputBorder.none,
                             filled: false,
                             contentPadding: EdgeInsets.zero,
@@ -3430,7 +3530,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                       const SizedBox(height: 8),
                       if (tasks.isEmpty)
                         Text(
-                          'Aucune tache',
+                          'No tasks',
                           style: Theme.of(context).textTheme.bodySmall,
                         )
                       else
@@ -3569,7 +3669,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   Widget _buildPlanningView() {
     final anchor = _dateOnly(_planningAnchorDate);
     final headerTitle =
-        'Semaine du ${_twoDigits(_startOfWeek(anchor).day)}/${_twoDigits(_startOfWeek(anchor).month)}';
+        'Week of ${_twoDigits(_startOfWeek(anchor).day)}/${_twoDigits(_startOfWeek(anchor).month)}';
 
     DateTime previousAnchor() {
       return anchor.subtract(const Duration(days: 7));
@@ -3594,7 +3694,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   _syncWeekNotesControllerForDate(_planningAnchorDate);
                 },
                 icon: const Icon(Icons.chevron_left),
-                tooltip: 'Periode precedente',
+                tooltip: 'Previous period',
               ),
               Expanded(
                 child: Text(
@@ -3603,6 +3703,17 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
+              if (!_isSameDay(_startOfWeek(anchor), _startOfWeek(_todayOnly)))
+                IconButton(
+                  onPressed: () {
+                    setState(() {
+                      _planningAnchorDate = _todayOnly;
+                    });
+                    _syncWeekNotesControllerForDate(_planningAnchorDate);
+                  },
+                  icon: const Icon(Icons.today_rounded),
+                  tooltip: 'Go to current week',
+                ),
               IconButton(
                 onPressed: () {
                   setState(() {
@@ -3611,7 +3722,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   _syncWeekNotesControllerForDate(_planningAnchorDate);
                 },
                 icon: const Icon(Icons.chevron_right),
-                tooltip: 'Periode suivante',
+                tooltip: 'Next period',
               ),
             ],
           ),
@@ -3691,7 +3802,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                         onPressed: () => _dismissReminder(reminder.id),
                         icon: const Icon(Icons.close, size: 16),
                         visualDensity: VisualDensity.compact,
-                        tooltip: 'Fermer',
+                        tooltip: 'Close',
                       ),
                     ],
                   ),
@@ -3801,13 +3912,13 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Resultats de recherche: "${widget.query}"')),
+      appBar: AppBar(title: Text('Search results: "${widget.query}"')),
       body: widget.results.isEmpty
           ? Center(
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Text(
-                  'Aucun resultat pour "${widget.query}".',
+                  'No results for "${widget.query}".',
                   style: Theme.of(context).textTheme.titleMedium,
                   textAlign: TextAlign.center,
                 ),
@@ -3882,7 +3993,7 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
                                   autofocus: true,
                                   keyboardType: TextInputType.multiline,
                                   decoration: const InputDecoration(
-                                    hintText: 'Ecris ta note ici...',
+                                    hintText: 'Write your note here...',
                                     border: OutlineInputBorder(),
                                     contentPadding: EdgeInsets.all(10),
                                   ),
