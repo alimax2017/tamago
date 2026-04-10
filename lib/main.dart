@@ -71,10 +71,10 @@ enum TaskColorOption {
 enum ProjectColorOption {
   jaune('Yellow', Color(0xFFFFE79A)),
   vert('Mint green', Color(0xFFBDECC8)),
+  marron('Peach', Color(0xFFF1C9A6)),
   rouge('Coral pink', Color(0xFFFFB3C7)),
   bleu('Lilac', Color(0xFFC9C4FF)),
-  gris('Lavender gray', Color(0xFFE2DDEA)),
-  marron('Peach', Color(0xFFF1C9A6));
+  gris('Lavender gray', Color(0xFFE2DDEA));
 
   const ProjectColorOption(this.label, this.color);
   final String label;
@@ -308,6 +308,7 @@ class _GlobalSearchResult {
     required this.title,
     required this.subtitle,
     required this.matchedFields,
+    this.meta = '',
     this.onTap,
     this.noteContent,
     this.onNoteChanged,
@@ -317,6 +318,7 @@ class _GlobalSearchResult {
   final String title;
   final String subtitle;
   final List<_SearchMatchedField> matchedFields;
+  final String meta;
   final VoidCallback? onTap;
   final String? noteContent;
   final void Function(String)? onNoteChanged;
@@ -661,7 +663,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 id: reminderId,
                 title: task.name,
                 subtitle:
-                    'Reminder ${_normalizeReminderOption(reminderOption)} - ${_twoDigits(occurrenceDate.day)}/${_twoDigits(occurrenceDate.month)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
+                    'Reminder ${_normalizeReminderOption(reminderOption)} - ${_formatMonthDayUs(occurrenceDate)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
               ),
             );
           }
@@ -795,6 +797,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   String _twoDigits(int value) {
     return value.toString().padLeft(2, '0');
+  }
+
+  String _formatMonthDayUs(DateTime value) {
+    return '${_twoDigits(value.month)}/${_twoDigits(value.day)}';
+  }
+
+  String _formatDateUs(DateTime value) {
+    return '${_formatMonthDayUs(value)}/${value.year}';
   }
 
   String _timeRangeLabel(TaskItem task) {
@@ -1245,6 +1255,56 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         .toList();
   }
 
+  String _collapseSearchText(String value) {
+    return value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  List<String> _extractSentences(String value) {
+    final normalized = value.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final sentences = <String>[];
+    final buffer = StringBuffer();
+
+    void flush() {
+      final sentence = _collapseSearchText(buffer.toString());
+      if (sentence.isNotEmpty) {
+        sentences.add(sentence);
+      }
+      buffer.clear();
+    }
+
+    for (var index = 0; index < normalized.length; index++) {
+      final character = normalized[index];
+      buffer.write(character);
+      final isSentenceBreak =
+          character == '.' ||
+          character == '!' ||
+          character == '?' ||
+          character == '\n';
+      if (isSentenceBreak) {
+        flush();
+      }
+    }
+
+    flush();
+    return sentences;
+  }
+
+  String _matchingNoteExcerpt(List<String> tokens, String noteText) {
+    final sentences = _extractSentences(noteText);
+    final matches = sentences
+        .where((sentence) => _containsAtLeastOneToken(tokens, sentence))
+        .toList();
+    if (matches.isNotEmpty) {
+      return matches.join(' ');
+    }
+
+    final compact = _collapseSearchText(noteText);
+    if (compact.isEmpty) {
+      return 'Empty note';
+    }
+    return compact.length > 160 ? '${compact.substring(0, 160)}...' : compact;
+  }
+
   List<_GlobalSearchResult> _buildGlobalSearchResults(String query) {
     final tokens = _searchTokens(query);
     if (tokens.isEmpty) {
@@ -1254,11 +1314,12 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final results = <_GlobalSearchResult>[];
 
     for (final task in _tasks) {
-      final dateLabel =
-          '${_twoDigits(task.date.day)}/${_twoDigits(task.date.month)}/${task.date.year}';
+      final dateLabel = _formatDateUs(task.date);
+      final linkedProject = _projectForTask(task);
+      final projectName = linkedProject?.name ?? task.project;
       final taskText = [
         task.name,
-        task.project,
+        projectName,
         task.contact,
         task.status,
         task.recurrence,
@@ -1277,9 +1338,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           _GlobalSearchResult(
             category: 'Task',
             title: task.name,
-            subtitle:
-                '$dateLabel - ${task.project.isEmpty ? 'No project' : task.project}',
+            subtitle: projectName.isEmpty ? '' : 'Project: $projectName',
             matchedFields: matchedFields,
+            meta: dateLabel,
             onTap: () {
               _openTaskEditor(task);
             },
@@ -1303,11 +1364,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         results.add(
           _GlobalSearchResult(
             category: 'Project',
-            title: project.name,
-            subtitle: project.description.isEmpty
-                ? project.status
-                : '${project.status} - ${project.description}',
+            title: 'Project: ${project.name}',
+            subtitle: '',
             matchedFields: matchedFields,
+            meta: _formatDateUs(project.startDate),
             onTap: () {
               _openProjectEditor(project);
             },
@@ -1319,9 +1379,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     for (final entry in _weekNotesByWeekKey.entries) {
       final noteText = '${entry.key} ${entry.value}';
       if (_matchesTokens(tokens, noteText)) {
-        final compact = entry.value.replaceAll('\n', ' ').trim();
         final parsedWeek = DateTime.tryParse(entry.key);
         final weekKey = entry.key;
+        final excerpt = _matchingNoteExcerpt(tokens, entry.value);
         final matchedFields = _collectMatchedFields(tokens, [
           MapEntry('Week', entry.key),
           MapEntry('Note', entry.value),
@@ -1329,12 +1389,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         results.add(
           _GlobalSearchResult(
             category: 'Note',
-            title: 'Week ${entry.key}',
-            subtitle: compact.isEmpty
-                ? 'Empty note'
-                : (compact.length > 110
-                      ? '${compact.substring(0, 110)}...'
-                      : compact),
+            title: 'Note',
+            subtitle: excerpt,
             matchedFields: matchedFields,
             onTap: parsedWeek == null
                 ? null
@@ -1437,11 +1493,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
-    String timeLabel(TimeOfDay? value) {
+    String timeLabel(BuildContext context, TimeOfDay? value) {
       if (value == null) {
         return '--:--';
       }
-      return '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+      return MaterialLocalizations.of(
+        context,
+      ).formatTimeOfDay(value, alwaysUse24HourFormat: false);
     }
 
     int toMinutes(TimeOfDay value) {
@@ -1614,6 +1672,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               final picked = await showTimePicker(
                 context: context,
                 initialTime: startTime ?? const TimeOfDay(hour: 9, minute: 0),
+                builder: (context, child) {
+                  final mediaQuery = MediaQuery.of(context);
+                  return MediaQuery(
+                    data: mediaQuery.copyWith(alwaysUse24HourFormat: false),
+                    child: child ?? const SizedBox.shrink(),
+                  );
+                },
               );
               if (picked != null) {
                 setModalState(() {
@@ -1628,6 +1693,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               final picked = await showTimePicker(
                 context: context,
                 initialTime: endTime ?? const TimeOfDay(hour: 10, minute: 0),
+                builder: (context, child) {
+                  final mediaQuery = MediaQuery.of(context);
+                  return MediaQuery(
+                    data: mediaQuery.copyWith(alwaysUse24HourFormat: false),
+                    child: child ?? const SizedBox.shrink(),
+                  );
+                },
               );
               if (picked != null) {
                 setModalState(() {
@@ -1743,14 +1815,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           TextField(
                                             controller: nameController,
                                             decoration: const InputDecoration(
-                                              labelText: 'Name',
+                                              prefixIcon: Icon(Icons.title),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
                                           TextField(
                                             controller: contactController,
                                             decoration: const InputDecoration(
-                                              labelText: 'Contact',
+                                              prefixIcon: Icon(Icons.person),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
@@ -1760,35 +1832,72 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 child: ListTile(
                                                   contentPadding:
                                                       EdgeInsets.zero,
-                                                  title: const Text(
-                                                    'Start date',
-                                                  ),
-                                                  subtitle: Text(
-                                                    '${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}',
-                                                  ),
-                                                  trailing: const Icon(
+                                                  leading: const Icon(
                                                     Icons.calendar_month,
+                                                  ),
+                                                  title: Text(
+                                                    _formatDateUs(selectedDate),
                                                   ),
                                                   onTap: pickDate,
                                                 ),
                                               ),
                                               const SizedBox(width: 10),
                                               Expanded(
+                                                child: OutlinedButton.icon(
+                                                  onPressed: allDay
+                                                      ? null
+                                                      : pickStartTime,
+                                                  icon: const Icon(
+                                                    Icons.schedule,
+                                                  ),
+                                                  label: Text(
+                                                    timeLabel(
+                                                      context,
+                                                      startTime,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Expanded(
                                                 child: ListTile(
                                                   contentPadding:
                                                       EdgeInsets.zero,
-                                                  title: const Text('End date'),
-                                                  subtitle: Text(
-                                                    '${selectedEndDate.day.toString().padLeft(2, '0')}/${selectedEndDate.month.toString().padLeft(2, '0')}/${selectedEndDate.year}',
-                                                  ),
-                                                  trailing: const Icon(
+                                                  leading: const Icon(
                                                     Icons.event_available,
+                                                  ),
+                                                  title: Text(
+                                                    _formatDateUs(
+                                                      selectedEndDate,
+                                                    ),
                                                   ),
                                                   onTap: pickEndDate,
                                                 ),
                                               ),
-                                              SizedBox(
-                                                width: 145,
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: OutlinedButton.icon(
+                                                  onPressed: allDay
+                                                      ? null
+                                                      : pickEndTime,
+                                                  icon: const Icon(
+                                                    Icons.schedule_send,
+                                                  ),
+                                                  label: Text(
+                                                    timeLabel(context, endTime),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Expanded(
                                                 child: CheckboxListTile(
                                                   contentPadding:
                                                       EdgeInsets.zero,
@@ -1804,40 +1913,17 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                           .leading,
                                                 ),
                                               ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Row(
-                                            children: [
-                                              Expanded(
-                                                child: OutlinedButton(
-                                                  onPressed: allDay
-                                                      ? null
-                                                      : pickStartTime,
-                                                  child: Text(
-                                                    'Start time: ${timeLabel(startTime)}',
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 10),
-                                              Expanded(
-                                                child: OutlinedButton(
-                                                  onPressed: allDay
-                                                      ? null
-                                                      : pickEndTime,
-                                                  child: Text(
-                                                    'End time: ${timeLabel(endTime)}',
-                                                  ),
-                                                ),
-                                              ),
                                               const SizedBox(width: 10),
                                               Expanded(
                                                 child: TextField(
                                                   controller:
                                                       durationController,
+                                                  enabled: !allDay,
                                                   decoration:
                                                       const InputDecoration(
-                                                        labelText: 'Duration',
+                                                        prefixIcon: Icon(
+                                                          Icons.timer,
+                                                        ),
                                                       ),
                                                   onChanged: (value) {
                                                     if (isInternalDurationUpdate ||
@@ -1858,11 +1944,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             crossAxisAlignment:
                                                 CrossAxisAlignment.start,
                                             children: [
-                                              Text(
-                                                'Reminder',
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.titleSmall,
+                                              const Icon(
+                                                Icons.notifications_none,
+                                                size: 20,
+                                                color: Colors.black54,
                                               ),
                                               const SizedBox(height: 8),
                                               Wrap(
@@ -1892,15 +1977,15 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                   );
                                                 }).toList(),
                                               ),
-                                              const SizedBox(height: 6),
-                                              Text(
-                                                selectedReminders.isEmpty
-                                                    ? 'No reminder selected'
-                                                    : '${selectedReminders.length} reminder(s) selected',
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                              ),
+                                              if (selectedReminders.isNotEmpty)
+                                                const SizedBox(height: 6),
+                                              if (selectedReminders.isNotEmpty)
+                                                Text(
+                                                  '${selectedReminders.length} reminder(s) selected',
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                ),
                                             ],
                                           ),
                                           const SizedBox(height: 12),
@@ -1908,7 +1993,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             initialValue:
                                                 effectiveRecurrenceMode,
                                             decoration: const InputDecoration(
-                                              labelText: 'Recurrence',
+                                              prefixIcon: Icon(Icons.repeat),
                                             ),
                                             items: const [
                                               DropdownMenuItem(
@@ -1974,7 +2059,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           DropdownButtonFormField<String>(
                                             initialValue: effectiveStatus,
                                             decoration: const InputDecoration(
-                                              labelText: 'Status',
+                                              prefixIcon: Icon(Icons.flag),
                                             ),
                                             items: const [
                                               DropdownMenuItem(
@@ -2003,7 +2088,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             initialValue:
                                                 effectiveSelectedProjectId,
                                             decoration: const InputDecoration(
-                                              labelText: 'Project',
+                                              prefixIcon: Icon(Icons.folder),
                                             ),
                                             items: [
                                               const DropdownMenuItem(
@@ -2041,30 +2126,26 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                   ),
                                   child: Row(
                                     children: [
-                                      if (!isNew)
-                                        Expanded(
-                                          child: OutlinedButton.icon(
-                                            onPressed: () async {
-                                              setState(() {
-                                                _tasks.remove(task);
-                                              });
-                                              _saveTasks();
-                                              await closeDialogSafely(context);
-                                            },
-                                            icon: const Icon(Icons.close),
-                                            label: const Text('Delete'),
-                                          ),
-                                        ),
-                                      if (!isNew) const SizedBox(width: 10),
                                       TextButton(
                                         onPressed: () async {
                                           await closeDialogSafely(context);
                                         },
                                         child: const Text('Cancel'),
                                       ),
-                                      const SizedBox(width: 10),
+                                      if (!isNew) const SizedBox(width: 6),
+                                      if (!isNew)
+                                        TextButton(
+                                          onPressed: () async {
+                                            setState(() {
+                                              _tasks.remove(task);
+                                            });
+                                            _saveTasks();
+                                            await closeDialogSafely(context);
+                                          },
+                                          child: const Text('Delete'),
+                                        ),
+                                      const SizedBox(width: 6),
                                       Expanded(
-                                        flex: 2,
                                         child: FilledButton(
                                           onPressed: () async {
                                             if (!allDay) {
@@ -2211,7 +2292,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     String status = project.status;
     ProjectColorOption selectedColor = project.color;
     String formatDate(DateTime value) {
-      return '${value.day.toString().padLeft(2, '0')}/${value.month.toString().padLeft(2, '0')}/${value.year}';
+      return _formatDateUs(value);
     }
 
     var controllersDisposed = false;
@@ -2364,41 +2445,30 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             CrossAxisAlignment.start,
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Text(
-                                            'Edit project',
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.titleLarge,
-                                          ),
-                                          const SizedBox(height: 16),
                                           TextField(
                                             controller: nameController,
                                             decoration: const InputDecoration(
-                                              labelText: 'Name',
+                                              prefixIcon: Icon(Icons.title),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
                                           ListTile(
                                             contentPadding: EdgeInsets.zero,
-                                            title: const Text('Start date'),
-                                            subtitle: Text(
-                                              formatDate(startDate),
-                                            ),
-                                            trailing: const Icon(
+                                            leading: const Icon(
                                               Icons.calendar_month,
                                             ),
+                                            title: Text(formatDate(startDate)),
                                             onTap: pickStartDate,
                                           ),
                                           ListTile(
                                             contentPadding: EdgeInsets.zero,
-                                            title: const Text('End date'),
-                                            subtitle: Text(
+                                            leading: const Icon(
+                                              Icons.event_available,
+                                            ),
+                                            title: Text(
                                               endDate == null
                                                   ? 'Not set'
                                                   : formatDate(endDate!),
-                                            ),
-                                            trailing: const Icon(
-                                              Icons.event_available,
                                             ),
                                             onTap: pickEndDate,
                                           ),
@@ -2408,14 +2478,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             minLines: 2,
                                             maxLines: 5,
                                             decoration: const InputDecoration(
-                                              labelText: 'Description',
+                                              prefixIcon: Icon(Icons.notes),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
                                           DropdownButtonFormField<String>(
                                             initialValue: effectiveStatus,
                                             decoration: const InputDecoration(
-                                              labelText: 'Status',
+                                              prefixIcon: Icon(Icons.flag),
                                             ),
                                             items: const [
                                               DropdownMenuItem(
@@ -2440,11 +2510,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             },
                                           ),
                                           const SizedBox(height: 14),
-                                          Text(
-                                            'Color',
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.titleMedium,
+                                          const Icon(
+                                            Icons.palette,
+                                            size: 20,
+                                            color: Colors.black54,
                                           ),
                                           const SizedBox(height: 8),
                                           Wrap(
@@ -2692,8 +2761,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       ),
       child: Row(
         children: [
-          const Icon(Icons.search, size: 16, color: Colors.black54),
-          const SizedBox(width: 8),
           Expanded(
             child: TextField(
               controller: _headerSearchController,
@@ -2727,7 +2794,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             onPressed: _openSearchResultsPage,
             tooltip: 'Run search',
             icon: const Icon(
-              Icons.arrow_forward_rounded,
+              Icons.search_rounded,
               size: 17,
               color: Colors.black54,
             ),
@@ -3524,7 +3591,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '${_dayLabel(day)} ${_twoDigits(day.day)}/${_twoDigits(day.month)}',
+                        '${_dayLabel(day)} ${_formatMonthDayUs(day)}',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 8),
@@ -3668,8 +3735,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   Widget _buildPlanningView() {
     final anchor = _dateOnly(_planningAnchorDate);
-    final headerTitle =
-        'Week of ${_twoDigits(_startOfWeek(anchor).day)}/${_twoDigits(_startOfWeek(anchor).month)}';
+    final headerTitle = 'Week of ${_formatMonthDayUs(_startOfWeek(anchor))}';
 
     DateTime previousAnchor() {
       return anchor.subtract(const Duration(days: 7));
@@ -3939,37 +4005,8 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.black12),
                   ),
-                  child: ListTile(
-                    title: Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: item.matchedFields
-                            .map(
-                              (field) => Padding(
-                                padding: const EdgeInsets.only(bottom: 4),
-                                child: Text.rich(
-                                  TextSpan(
-                                    style: bodyStyle,
-                                    children: [
-                                      TextSpan(
-                                        text: '${field.label}: ',
-                                        style: bodyStyle.copyWith(
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      ..._highlightedSpans(
-                                        field.value,
-                                        bodyStyle,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            )
-                            .toList(),
-                      ),
-                    ),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
                     onTap: () {
                       final noteContent = item.noteContent;
                       if (noteContent != null) {
@@ -4007,6 +4044,80 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
 
                       item.onTap?.call();
                     },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (item.category == 'Note')
+                            Text.rich(
+                              TextSpan(
+                                style: bodyStyle,
+                                children: [
+                                  TextSpan(
+                                    text: 'Note: ',
+                                    style: bodyStyle.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  ..._highlightedSpans(
+                                    item.subtitle,
+                                    bodyStyle,
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Text.rich(
+                                    TextSpan(
+                                      style: bodyStyle.copyWith(
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                      children: _highlightedSpans(
+                                        item.title,
+                                        bodyStyle.copyWith(
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                if (item.meta.isNotEmpty) ...[
+                                  const SizedBox(width: 12),
+                                  Text(
+                                    item.meta,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ],
+                            ),
+                          if (item.category != 'Note' &&
+                              item.subtitle.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: Text.rich(
+                                TextSpan(
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                  children: _highlightedSpans(
+                                    item.subtitle,
+                                    Theme.of(context).textTheme.bodySmall ??
+                                        const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 );
               },
