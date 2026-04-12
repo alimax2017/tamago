@@ -2,11 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
 
 void main() {
   runZonedGuarded(
@@ -177,11 +182,46 @@ String _normalizeReminderOption(String rawOption) {
   }
 }
 
+String _fullWeekdayLabel(DateTime date) {
+  const labels = <String>[
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+  ];
+  return labels[date.weekday - 1];
+}
+
+String _fullMonthLabel(DateTime date) {
+  const labels = <String>[
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+  return labels[date.month - 1];
+}
+
+String _formatLongDateUs(DateTime date) {
+  return '${_fullWeekdayLabel(date)}, ${_fullMonthLabel(date)} ${date.day}';
+}
+
 class TaskItem {
   TaskItem({
     required this.name,
-    required this.date,
-    DateTime? endDate,
+    this.date,
+    this.endDate,
     this.allDay = false,
     this.startTime,
     this.endTime,
@@ -193,11 +233,11 @@ class TaskItem {
     this.project = '',
     this.projectId,
     this.color = TaskColorOption.bleu,
-  }) : endDate = endDate ?? date;
+  });
 
   String name;
-  DateTime date;
-  DateTime endDate;
+  DateTime? date;
+  DateTime? endDate;
   bool allDay;
   TimeOfDay? startTime;
   TimeOfDay? endTime;
@@ -213,8 +253,8 @@ class TaskItem {
   Map<String, dynamic> toJson() {
     return {
       'name': name,
-      'date': date.toIso8601String(),
-      'endDate': endDate.toIso8601String(),
+      'date': date?.toIso8601String(),
+      'endDate': endDate?.toIso8601String(),
       'allDay': allDay,
       'startTime': _timeToMinutes(startTime),
       'endTime': _timeToMinutes(endTime),
@@ -238,12 +278,8 @@ class TaskItem {
 
     return TaskItem(
       name: (json['name'] as String?) ?? '',
-      date:
-          DateTime.tryParse((json['date'] as String?) ?? '') ?? DateTime.now(),
-      endDate:
-          DateTime.tryParse((json['endDate'] as String?) ?? '') ??
-          DateTime.tryParse((json['date'] as String?) ?? '') ??
-          DateTime.now(),
+      date: DateTime.tryParse((json['date'] as String?) ?? ''),
+      endDate: DateTime.tryParse((json['endDate'] as String?) ?? ''),
       allDay: (json['allDay'] as bool?) ?? false,
       startTime: _minutesToTime(json['startTime'] as int?),
       endTime: _minutesToTime(json['endTime'] as int?),
@@ -403,6 +439,17 @@ class TodayPage extends StatefulWidget {
 }
 
 class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
+  static final FlutterLocalNotificationsPlugin _localNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+  static const AndroidNotificationChannel _taskReminderChannel =
+      AndroidNotificationChannel(
+        'tamago_task_reminders',
+        'Task reminders',
+        description: 'Reminders for scheduled Tamago tasks',
+        importance: Importance.max,
+        playSound: true,
+      );
+
   Widget buildMobileTodayTasksList() {
     final todayTasks = _tasksForDate(_todayOnly);
     return Container(
@@ -451,11 +498,47 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   void _resetRecurringTasksStatus() {
     final today = _dateOnly(DateTime.now());
     for (final task in _tasks) {
+      final taskDate = task.date;
       if (_isRecurringTask(task) &&
           task.status == 'Done' &&
-          !_isSameDay(task.date, today)) {
+          taskDate != null &&
+          !_isSameDay(taskDate, today)) {
         task.status = 'To do';
       }
+    }
+  }
+
+  DateTime _lastPendingTaskRollDate = DateTime.now();
+
+  bool _rollForwardPendingTasks(List<TaskItem> tasks, DateTime today) {
+    var changed = false;
+    for (final task in tasks) {
+      final taskDate = task.date;
+      if (task.status == 'Done' || _isRecurringTask(task) || taskDate == null) {
+        continue;
+      }
+      final taskStart = _dateOnly(taskDate);
+      final taskEnd = _dateOnly(task.endDate ?? taskDate);
+      if (!taskEnd.isBefore(today)) {
+        continue;
+      }
+      final spanDays = taskEnd.difference(taskStart).inDays;
+      task.date = today;
+      task.endDate = spanDays <= 0
+          ? today
+          : today.add(Duration(days: spanDays));
+      changed = true;
+    }
+    return changed;
+  }
+
+  void _rollForwardPendingTasksIfNeeded(DateTime today) {
+    if (_isSameDay(_lastPendingTaskRollDate, today)) {
+      return;
+    }
+    _lastPendingTaskRollDate = today;
+    if (_rollForwardPendingTasks(_tasks, today)) {
+      unawaited(_saveTasks());
     }
   }
 
@@ -504,6 +587,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   static const MethodChannel _androidWidgetChannel = MethodChannel(
     'tamago/widget',
   );
+  static const MethodChannel _androidNotifChannel = MethodChannel(
+    'tamago/notifications',
+  );
   static const List<String> _reminderOptions = <String>[
     '1 day before',
     '1h before',
@@ -527,6 +613,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       <String, _ReminderNotice>{};
   final Set<String> _dismissedReminderIds = <String>{};
   final Map<String, String> _weekNotesByWeekKey = <String, String>{};
+  bool _mobileNotificationsReady = false;
 
   MainView _currentView = MainView.today;
   DateTime _planningAnchorDate = DateTime.now();
@@ -550,6 +637,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     );
     _loadData();
     _loadWeekNotes();
+    unawaited(_initializeMobileNotifications());
+    unawaited(_requestBatteryOptimizationExemption());
   }
 
   @override
@@ -592,6 +681,225 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         first.day == second.day;
   }
 
+  bool get _supportsScheduledTaskNotifications {
+    if (kIsWeb) {
+      return false;
+    }
+
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+  }
+
+  Future<void> _initializeMobileNotifications() async {
+    if (!_supportsScheduledTaskNotifications || _mobileNotificationsReady) {
+      return;
+    }
+
+    tz.initializeTimeZones();
+    try {
+      final timezoneName = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(timezoneName));
+      debugPrint('[Tamago][Notif] timezone=$timezoneName');
+    } catch (e) {
+      debugPrint('[Tamago][Notif] timezone error: $e');
+    }
+
+    const initializationSettings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
+    );
+
+    await _localNotificationsPlugin.initialize(initializationSettings);
+
+    final androidImpl = _localNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    await androidImpl?.createNotificationChannel(_taskReminderChannel);
+
+    final notifGranted = await androidImpl?.requestNotificationsPermission();
+    debugPrint('[Tamago][Notif] notifPermission=$notifGranted');
+
+    // Android 12+ requires user to grant exact alarm permission via Settings
+    final canExact = await androidImpl?.canScheduleExactNotifications();
+    debugPrint('[Tamago][Notif] canScheduleExact=$canExact');
+    if (canExact == false) {
+      await androidImpl?.requestExactAlarmsPermission();
+    }
+
+    final iosImplementation = _localNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin
+        >();
+    await iosImplementation?.requestPermissions(
+      alert: true,
+      badge: false,
+      sound: true,
+    );
+
+    _mobileNotificationsReady = true;
+    debugPrint('[Tamago][Notif] initialized, tasks=${_tasks.length}');
+    // Reschedule now that init is done (tasks may already be loaded)
+    await _scheduleMobileTaskNotifications();
+  }
+
+  Iterable<DateTime> _notificationOccurrenceDatesForTask(
+    TaskItem task,
+    DateTime startDay,
+    DateTime endDay,
+  ) sync* {
+    if (task.date == null) {
+      return;
+    }
+
+    var currentDay = startDay;
+    while (!currentDay.isAfter(endDay)) {
+      if (_taskOccursOnDate(task, currentDay)) {
+        yield currentDay;
+      }
+      currentDay = currentDay.add(const Duration(days: 1));
+    }
+  }
+
+  int _notificationIntId(String rawValue) {
+    var hash = 0;
+    for (final codeUnit in rawValue.codeUnits) {
+      hash = (hash * 31 + codeUnit) & 0x7fffffff;
+    }
+    return hash;
+  }
+
+  Future<void> _scheduleMobileTaskNotifications() async {
+    if (!_supportsScheduledTaskNotifications || !_mobileNotificationsReady) {
+      debugPrint(
+        '[Tamago][Notif] skip: supported=$_supportsScheduledTaskNotifications ready=$_mobileNotificationsReady',
+      );
+      return;
+    }
+
+    await _localNotificationsPlugin.cancelAll();
+
+    // Determine whether exact alarms are permitted
+    final androidImpl = _localNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    final canExact =
+        await androidImpl?.canScheduleExactNotifications() ?? false;
+    final scheduleMode = canExact
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle;
+    debugPrint(
+      '[Tamago][Notif] scheduling with mode=${canExact ? "exact" : "inexact"}, tasks=${_tasks.length}',
+    );
+
+    final now = DateTime.now();
+    final startDay = _dateOnly(now);
+    final endDay = startDay.add(const Duration(days: 30));
+    const notificationDetails = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'tamago_task_reminders',
+        'Task reminders',
+        channelDescription: 'Reminders for scheduled Tamago tasks',
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        category: AndroidNotificationCategory.reminder,
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: false,
+        presentSound: true,
+        interruptionLevel: InterruptionLevel.timeSensitive,
+      ),
+    );
+
+    var scheduledCount = 0;
+    for (final task in _tasks) {
+      if (task.startTime == null) {
+        continue;
+      }
+
+      final reminderSelections = _parseReminderSelections(task.reminder);
+      if (reminderSelections.isEmpty) {
+        continue;
+      }
+
+      for (final occurrenceDate in _notificationOccurrenceDatesForTask(
+        task,
+        startDay,
+        endDay,
+      )) {
+        final startDateTime = _withTime(occurrenceDate, task.startTime!);
+        for (final reminderOption in reminderSelections) {
+          final offset = _reminderOffset(reminderOption);
+          if (offset == null) {
+            continue;
+          }
+
+          final scheduledAt = startDateTime.subtract(offset);
+          if (!scheduledAt.isAfter(now)) {
+            continue;
+          }
+
+          final reminderId = _reminderId(task, occurrenceDate, reminderOption);
+          await _localNotificationsPlugin.zonedSchedule(
+            _notificationIntId(reminderId),
+            task.name,
+            'Reminder ${_normalizeReminderOption(reminderOption)} - ${_formatMonthDayUs(occurrenceDate)} ${_formatTimeUs(task.startTime!)}',
+            tz.TZDateTime.fromMillisecondsSinceEpoch(
+              tz.local,
+              scheduledAt.millisecondsSinceEpoch,
+            ),
+            notificationDetails,
+            androidScheduleMode: scheduleMode,
+          );
+          scheduledCount++;
+          debugPrint(
+            '[Tamago][Notif] scheduled "${task.name}" at $scheduledAt',
+          );
+        }
+      }
+    }
+    debugPrint('[Tamago][Notif] total scheduled: $scheduledCount');
+    try {
+      final pending = await _localNotificationsPlugin
+          .pendingNotificationRequests();
+      debugPrint('[Tamago][Notif] plugin pending count=${pending.length}');
+      for (final request in pending.take(5)) {
+        debugPrint(
+          '[Tamago][Notif] pending id=${request.id} title=${request.title}',
+        );
+      }
+    } catch (e) {
+      debugPrint('[Tamago][Notif] pending read error: $e');
+    }
+  }
+
+  Future<void> _requestBatteryOptimizationExemption() async {
+    if (!_supportsScheduledTaskNotifications) return;
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      final ignoring =
+          await _androidNotifChannel.invokeMethod<bool>(
+            'isIgnoringBatteryOptimizations',
+          ) ??
+          true;
+      debugPrint('[Tamago][Notif] isIgnoringBatteryOptimizations=$ignoring');
+      if (!ignoring) {
+        await _androidNotifChannel.invokeMethod<void>(
+          'requestIgnoreBatteryOptimizations',
+        );
+      }
+    } catch (e) {
+      debugPrint('[Tamago][Notif] battery opt error: $e');
+    }
+  }
+
   List<String> _parseReminderSelections(String rawReminder) {
     final trimmed = rawReminder.trim();
     if (trimmed.isEmpty || trimmed == 'None') {
@@ -614,7 +922,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   ) {
     final start = task.startTime;
     final startLabel = start == null ? 'none' : '${start.hour}:${start.minute}';
-    return '${task.name}|${task.date.toIso8601String()}|${task.endDate.toIso8601String()}|$startLabel|${occurrenceDate.toIso8601String()}|$reminderOption';
+    final dateLabel = task.date?.toIso8601String() ?? 'none';
+    final endDateLabel = task.endDate?.toIso8601String() ?? 'none';
+    return '${task.name}|$dateLabel|$endDateLabel|$startLabel|${occurrenceDate.toIso8601String()}|$reminderOption';
   }
 
   void _refreshLiveNowAndReminders() {
@@ -624,6 +934,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
     final now = DateTime.now();
     final today = _dateOnly(now);
+    _rollForwardPendingTasksIfNeeded(today);
     final tomorrow = today.add(const Duration(days: 1));
     final newNotices = <_ReminderNotice>[];
 
@@ -663,7 +974,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 id: reminderId,
                 title: task.name,
                 subtitle:
-                    'Reminder ${_normalizeReminderOption(reminderOption)} - ${_formatMonthDayUs(occurrenceDate)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
+                    'Reminder ${_normalizeReminderOption(reminderOption)} - ${_formatMonthDayUs(occurrenceDate)} ${_formatTimeUs(task.startTime!)}',
               ),
             );
           }
@@ -713,9 +1024,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   bool _taskOccursOnDate(TaskItem task, DateTime date) {
+    if (task.date == null) {
+      return false;
+    }
+
     final day = _dateOnly(date);
-    final taskDate = _dateOnly(task.date);
-    final taskEndDate = _dateOnly(task.endDate);
+    final taskDate = _dateOnly(task.date!);
+    final taskEndDate = _dateOnly(task.endDate ?? task.date!);
     if (day.isBefore(taskDate)) {
       return false;
     }
@@ -807,6 +1122,19 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     return '${_formatMonthDayUs(value)}/${value.year}';
   }
 
+  String _formatOptionalDateUs(DateTime? value, {String fallback = 'Not set'}) {
+    if (value == null) {
+      return fallback;
+    }
+    return _formatDateUs(value);
+  }
+
+  String _formatTimeUs(TimeOfDay value) {
+    final hour = value.hourOfPeriod == 0 ? 12 : value.hourOfPeriod;
+    final suffix = value.period == DayPeriod.am ? 'AM' : 'PM';
+    return '$hour:${_twoDigits(value.minute)} $suffix';
+  }
+
   String _timeRangeLabel(TaskItem task) {
     if (task.startTime == null || task.endTime == null) {
       return 'No time set';
@@ -845,7 +1173,12 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   Future<void> _openNewTaskForDate(DateTime date) async {
-    final newTask = TaskItem(name: 'New task', date: _dateOnly(date));
+    final normalizedDate = _dateOnly(date);
+    final newTask = TaskItem(
+      name: 'New task',
+      date: normalizedDate,
+      endDate: normalizedDate,
+    );
     await _openTaskEditor(newTask, isNew: true);
   }
 
@@ -893,9 +1226,37 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   List<TaskItem> _tasksForProject(ProjectItem project) {
-    return _tasks
+    final tasks = _tasks
         .where((task) => _taskBelongsToProject(task, project))
         .toList();
+
+    tasks.sort((a, b) {
+      final aDate = a.date;
+      final bDate = b.date;
+      if (aDate == null && bDate != null) {
+        return -1;
+      }
+      if (aDate != null && bDate == null) {
+        return 1;
+      }
+      if (aDate != null && bDate != null) {
+        final byStartDate = aDate.compareTo(bDate);
+        if (byStartDate != 0) {
+          return byStartDate;
+        }
+
+        final aEndDate = a.endDate ?? aDate;
+        final bEndDate = b.endDate ?? bDate;
+        final byEndDate = aEndDate.compareTo(bEndDate);
+        if (byEndDate != 0) {
+          return byEndDate;
+        }
+      }
+
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+
+    return tasks;
   }
 
   bool _taskBelongsToProject(TaskItem task, ProjectItem project) {
@@ -955,7 +1316,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     }
 
     setState(() {
-      _tasks.insert(0, TaskItem(name: taskName, date: _todayOnly));
+      _tasks.insert(
+        0,
+        TaskItem(name: taskName, date: _todayOnly, endDate: _todayOnly),
+      );
       _quickAddTaskController.clear();
     });
     _saveTasks();
@@ -1038,7 +1402,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
     final task = TaskItem(
       name: taskName,
-      date: _todayOnly,
       project: selectedProject.name,
       projectId: selectedProject.id,
       color: _taskColorFromProjectColor(selectedProject.color),
@@ -1097,6 +1460,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
+    final today = _todayOnly;
+    final didRollPendingTasks = _rollForwardPendingTasks(loadedTasks, today);
+    _lastPendingTaskRollDate = today;
+
     if (!mounted) {
       return;
     }
@@ -1113,8 +1480,18 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
       _resetRecurringTasksStatus();
     });
-    _refreshLiveNowAndReminders();
-    _updateAndroidTodayWidget();
+    if (didRollPendingTasks) {
+      unawaited(_saveTasks());
+    } else {
+      _refreshLiveNowAndReminders();
+      _updateAndroidTodayWidget();
+      // Always reschedule after load — init may have finished first with empty tasks
+      unawaited(_scheduleMobileTaskNotifications());
+    }
+    // If init finished before load, reschedule now that tasks are populated
+    if (_mobileNotificationsReady) {
+      unawaited(_scheduleMobileTaskNotifications());
+    }
   }
 
   Future<void> _saveTasks() async {
@@ -1123,6 +1500,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     await prefs.setString(_tasksStorageKey, jsonEncode(payload));
     _refreshLiveNowAndReminders();
     _updateAndroidTodayWidget();
+    await _scheduleMobileTaskNotifications();
   }
 
   Future<void> _updateAndroidTodayWidget() async {
@@ -1314,7 +1692,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final results = <_GlobalSearchResult>[];
 
     for (final task in _tasks) {
-      final dateLabel = _formatDateUs(task.date);
+      final dateLabel = _formatOptionalDateUs(task.date, fallback: 'No date');
       final linkedProject = _projectForTask(task);
       final projectName = linkedProject?.name ?? task.project;
       final taskText = [
@@ -1444,9 +1822,19 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final durationController = TextEditingController(text: task.duration);
     final contactController = TextEditingController(text: task.contact);
 
-    DateTime selectedDate = task.date;
-    DateTime selectedEndDate = task.endDate;
-    if (selectedEndDate.isBefore(selectedDate)) {
+    final defaultNewTaskDate = isNew && _currentView != MainView.projects
+        ? _todayOnly
+        : null;
+    DateTime? selectedDate = task.date == null
+        ? defaultNewTaskDate
+        : _dateOnly(task.date!);
+    DateTime? selectedEndDate = task.endDate == null
+        ? selectedDate
+        : _dateOnly(task.endDate!);
+    if (selectedDate == null) {
+      selectedEndDate = null;
+    } else if (selectedEndDate != null &&
+        selectedEndDate.isBefore(selectedDate)) {
       selectedEndDate = selectedDate;
     }
     bool allDay = task.allDay;
@@ -1472,7 +1860,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         recurrence == 'Monthly' ||
         recurrence == 'None') {
       recurrenceMode = recurrence;
-    } else if (recurrence == 'Weekly') {
+    } else if (recurrence == 'Weekly' && selectedDate != null) {
       recurrenceMode = 'Weekdays';
       selectedWeekdays.add(weekdays[selectedDate.weekday - 1]);
     } else if (recurrence.startsWith('Days:')) {
@@ -1640,25 +2028,43 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             Future<void> pickDate() async {
               final pickedDate = await showDatePicker(
                 context: context,
-                initialDate: selectedDate,
+                initialDate: selectedDate ?? _todayOnly,
                 firstDate: DateTime(2020),
                 lastDate: DateTime(2100),
               );
               if (pickedDate != null) {
                 setModalState(() {
                   selectedDate = pickedDate;
-                  if (selectedEndDate.isBefore(selectedDate)) {
+                  if (selectedEndDate != null &&
+                      selectedEndDate!.isBefore(selectedDate!)) {
                     selectedEndDate = selectedDate;
                   }
                 });
               }
             }
 
+            void clearDate() {
+              setModalState(() {
+                selectedDate = null;
+                selectedEndDate = null;
+                startTime = null;
+                endTime = null;
+                allDay = false;
+                durationController.clear();
+                selectedReminders.clear();
+                recurrenceMode = 'None';
+                selectedWeekdays.clear();
+              });
+            }
+
             Future<void> pickEndDate() async {
+              if (selectedDate == null) {
+                return;
+              }
               final pickedDate = await showDatePicker(
                 context: context,
-                initialDate: selectedEndDate,
-                firstDate: selectedDate,
+                initialDate: selectedEndDate ?? selectedDate!,
+                firstDate: selectedDate!,
                 lastDate: DateTime(2100),
               );
               if (pickedDate != null) {
@@ -1666,6 +2072,12 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   selectedEndDate = pickedDate;
                 });
               }
+            }
+
+            void clearEndDate() {
+              setModalState(() {
+                selectedEndDate = null;
+              });
             }
 
             Future<void> pickStartTime() async {
@@ -1836,7 +2248,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                     Icons.calendar_month,
                                                   ),
                                                   title: Text(
-                                                    _formatDateUs(selectedDate),
+                                                    _formatOptionalDateUs(
+                                                      selectedDate,
+                                                      fallback: 'No start date',
+                                                    ),
                                                   ),
                                                   onTap: pickDate,
                                                 ),
@@ -1844,7 +2259,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                               const SizedBox(width: 10),
                                               Expanded(
                                                 child: OutlinedButton.icon(
-                                                  onPressed: allDay
+                                                  onPressed:
+                                                      allDay ||
+                                                          selectedDate == null
                                                       ? null
                                                       : pickStartTime,
                                                   icon: const Icon(
@@ -1871,17 +2288,22 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                     Icons.event_available,
                                                   ),
                                                   title: Text(
-                                                    _formatDateUs(
+                                                    _formatOptionalDateUs(
                                                       selectedEndDate,
+                                                      fallback: 'No end date',
                                                     ),
                                                   ),
-                                                  onTap: pickEndDate,
+                                                  onTap: selectedDate == null
+                                                      ? null
+                                                      : pickEndDate,
                                                 ),
                                               ),
                                               const SizedBox(width: 10),
                                               Expanded(
                                                 child: OutlinedButton.icon(
-                                                  onPressed: allDay
+                                                  onPressed:
+                                                      allDay ||
+                                                          selectedDate == null
                                                       ? null
                                                       : pickEndTime,
                                                   icon: const Icon(
@@ -1986,6 +2408,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                     context,
                                                   ).textTheme.bodySmall,
                                                 ),
+                                              if (selectedDate == null)
+                                                Text(
+                                                  'Set a start date to enable reminders.',
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                ),
                                             ],
                                           ),
                                           const SizedBox(height: 12),
@@ -2013,16 +2442,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 child: Text('Monthly'),
                                               ),
                                             ],
-                                            onChanged: (value) {
-                                              if (value != null) {
-                                                setModalState(() {
-                                                  recurrenceMode = value;
-                                                  if (value != 'Weekdays') {
-                                                    selectedWeekdays.clear();
-                                                  }
-                                                });
-                                              }
-                                            },
+                                            onChanged: selectedDate == null
+                                                ? null
+                                                : (value) {
+                                                    if (value != null) {
+                                                      setModalState(() {
+                                                        recurrenceMode = value;
+                                                        if (value !=
+                                                            'Weekdays') {
+                                                          selectedWeekdays
+                                                              .clear();
+                                                        }
+                                                      });
+                                                    }
+                                                  },
                                           ),
                                           if (effectiveRecurrenceMode ==
                                               'Weekdays') ...[
@@ -2038,19 +2471,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 return FilterChip(
                                                   label: Text(day),
                                                   selected: isSelected,
-                                                  onSelected: (selected) {
-                                                    setModalState(() {
-                                                      if (selected) {
-                                                        selectedWeekdays.add(
-                                                          day,
-                                                        );
-                                                      } else {
-                                                        selectedWeekdays.remove(
-                                                          day,
-                                                        );
-                                                      }
-                                                    });
-                                                  },
+                                                  onSelected:
+                                                      selectedDate == null
+                                                      ? null
+                                                      : (selected) {
+                                                          setModalState(() {
+                                                            if (selected) {
+                                                              selectedWeekdays
+                                                                  .add(day);
+                                                            } else {
+                                                              selectedWeekdays
+                                                                  .remove(day);
+                                                            }
+                                                          });
+                                                        },
                                                 );
                                               }).toList(),
                                             ),
@@ -2148,7 +2582,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                       Expanded(
                                         child: FilledButton(
                                           onPressed: () async {
-                                            if (!allDay) {
+                                            if (!allDay &&
+                                                selectedDate != null) {
                                               syncMissingTimeFromDuration();
                                               syncDurationFromTimes();
 
@@ -2199,26 +2634,40 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                   : nameController.text.trim();
                                               task.date = selectedDate;
                                               task.endDate =
-                                                  selectedEndDate.isBefore(
-                                                    selectedDate,
-                                                  )
+                                                  selectedDate == null
+                                                  ? null
+                                                  : selectedEndDate == null
+                                                  ? null
+                                                  : selectedEndDate!.isBefore(
+                                                      selectedDate!,
+                                                    )
                                                   ? selectedDate
                                                   : selectedEndDate;
-                                              task.allDay = allDay;
-                                              task.startTime = allDay
+                                              task.allDay = selectedDate == null
+                                                  ? false
+                                                  : allDay;
+                                              task.startTime =
+                                                  selectedDate == null || allDay
                                                   ? null
                                                   : startTime;
-                                              task.endTime = allDay
+                                              task.endTime =
+                                                  selectedDate == null || allDay
                                                   ? null
                                                   : endTime;
-                                              task.duration = durationController
-                                                  .text
-                                                  .trim();
+                                              task.duration =
+                                                  selectedDate == null
+                                                  ? ''
+                                                  : durationController.text
+                                                        .trim();
                                               task.reminder =
-                                                  _encodeReminderSelections(
-                                                    selectedReminders,
-                                                  );
-                                              if (recurrenceMode ==
+                                                  selectedDate == null
+                                                  ? 'None'
+                                                  : _encodeReminderSelections(
+                                                      selectedReminders,
+                                                    );
+                                              if (selectedDate == null) {
+                                                recurrence = 'None';
+                                              } else if (recurrenceMode ==
                                                   'Weekdays') {
                                                 final orderedDays = weekdays
                                                     .where(
@@ -2519,26 +2968,58 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           Wrap(
                                             spacing: 8,
                                             runSpacing: 8,
-                                            children: ProjectColorOption.values
-                                                .map((colorOption) {
-                                                  return ChoiceChip(
-                                                    label: Text(
-                                                      colorOption.label,
-                                                    ),
-                                                    selected:
-                                                        selectedColor ==
-                                                        colorOption,
-                                                    selectedColor:
-                                                        colorOption.color,
-                                                    onSelected: (_) {
+                                            children: ProjectColorOption.values.map((
+                                              colorOption,
+                                            ) {
+                                              final isSelected =
+                                                  selectedColor == colorOption;
+                                              return Tooltip(
+                                                message: colorOption.label,
+                                                child: Material(
+                                                  color: Colors.transparent,
+                                                  child: InkWell(
+                                                    onTap: () {
                                                       setModalState(() {
                                                         selectedColor =
                                                             colorOption;
                                                       });
                                                     },
-                                                  );
-                                                })
-                                                .toList(),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          999,
+                                                        ),
+                                                    child: AnimatedContainer(
+                                                      duration: const Duration(
+                                                        milliseconds: 120,
+                                                      ),
+                                                      width: 34,
+                                                      height: 34,
+                                                      decoration: BoxDecoration(
+                                                        color:
+                                                            colorOption.color,
+                                                        shape: BoxShape.circle,
+                                                        border: Border.all(
+                                                          color: isSelected
+                                                              ? Colors.black87
+                                                              : Colors.black12,
+                                                          width: isSelected
+                                                              ? 3
+                                                              : 1,
+                                                        ),
+                                                      ),
+                                                      child: isSelected
+                                                          ? const Icon(
+                                                              Icons.check,
+                                                              size: 18,
+                                                              color:
+                                                                  Colors.white,
+                                                            )
+                                                          : null,
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            }).toList(),
                                           ),
                                           const SizedBox(height: 18),
                                           SizedBox(
@@ -2554,7 +3035,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                           .trim();
                                                 final newTask = TaskItem(
                                                   name: 'New task',
-                                                  date: _todayOnly,
                                                   project: projectName,
                                                   projectId: project.id,
                                                   color:
@@ -2916,7 +3396,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             buildPaneHeader(
-              title: 'Timeline',
+              title: _formatLongDateUs(_todayOnly),
               collapsed: _todayTimelinePaneCollapsed,
               expanded: isTimelineExpanded,
               onCollapsePressed: () =>
@@ -3043,7 +3523,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                           children: projectTasks.map((task) {
                             return Padding(
                               key: ValueKey(
-                                'project-task-${project.id}-${task.name}-${task.date.toIso8601String()}',
+                                'project-task-${project.id}-${task.name}-${task.date?.toIso8601String() ?? 'no-date'}',
                               ),
                               padding: const EdgeInsets.only(top: 8),
                               child: _buildTaskTile(task),
@@ -3116,7 +3596,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   Widget _buildPlanningDayView(DateTime date) {
     final day = _dateOnly(date);
     final isTodayView = _isSameDay(day, _todayOnly);
-    final dayTasks = isTodayView ? _todayTasks : _tasksForDate(day);
+    final dayTasks = _tasksForDate(day);
     final timedTasks =
         dayTasks
             .where((task) => task.startTime != null && task.endTime != null)
