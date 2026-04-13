@@ -604,6 +604,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   final TextEditingController _headerSearchController = TextEditingController();
   final TextEditingController _weekNotesController = TextEditingController();
   final ScrollController _planningDayScrollController = ScrollController();
+  final GlobalKey _goToCurrentWeekButtonKey = GlobalKey();
 
   final List<TaskItem> _tasks = [];
   final List<ProjectItem> _projects = [];
@@ -1133,6 +1134,243 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final hour = value.hourOfPeriod == 0 ? 12 : value.hourOfPeriod;
     final suffix = value.period == DayPeriod.am ? 'AM' : 'PM';
     return '$hour:${_twoDigits(value.minute)} $suffix';
+  }
+
+  Future<void> _showPlanningMonthPickerPopup() async {
+    final buttonContext = _goToCurrentWeekButtonKey.currentContext;
+    if (buttonContext == null) {
+      return;
+    }
+
+    final buttonBox = buttonContext.findRenderObject() as RenderBox?;
+    final overlayBox =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (buttonBox == null || overlayBox == null) {
+      return;
+    }
+
+    final topLeft = buttonBox.localToGlobal(Offset.zero, ancestor: overlayBox);
+    final bottomRight = buttonBox.localToGlobal(
+      buttonBox.size.bottomRight(Offset.zero),
+      ancestor: overlayBox,
+    );
+    final overlaySize = overlayBox.size;
+
+    final pickedDate = await showDialog<DateTime>(
+      context: context,
+      barrierDismissible: true,
+      barrierColor: Colors.black12,
+      builder: (dialogContext) {
+        DateTime visibleMonth = DateTime(_todayOnly.year, _todayOnly.month, 1);
+        final selectedDate = _dateOnly(_planningAnchorDate);
+
+        return StatefulBuilder(
+          builder: (context, setPopupState) {
+            final firstOfMonth = DateTime(
+              visibleMonth.year,
+              visibleMonth.month,
+              1,
+            );
+            final leadingEmptyDays = firstOfMonth.weekday - 1;
+            final daysInMonth = DateTime(
+              visibleMonth.year,
+              visibleMonth.month + 1,
+              0,
+            ).day;
+            final totalCells = ((leadingEmptyDays + daysInMonth + 6) ~/ 7) * 7;
+
+            const popupWidth = 290.0;
+            const popupHeight = 324.0;
+            final left = topLeft.dx.clamp(
+              8.0,
+              (overlaySize.width - popupWidth - 8).clamp(8.0, double.infinity),
+            );
+            final top = (bottomRight.dy + 6).clamp(
+              8.0,
+              (overlaySize.height - popupHeight - 8).clamp(
+                8.0,
+                double.infinity,
+              ),
+            );
+
+            return Stack(
+              children: [
+                Positioned(
+                  left: left,
+                  top: top,
+                  child: Material(
+                    elevation: 10,
+                    borderRadius: BorderRadius.circular(14),
+                    color: Colors.white,
+                    child: SizedBox(
+                      width: popupWidth,
+                      height: popupHeight,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                IconButton(
+                                  onPressed: () {
+                                    setPopupState(() {
+                                      visibleMonth = DateTime(
+                                        visibleMonth.year,
+                                        visibleMonth.month - 1,
+                                        1,
+                                      );
+                                    });
+                                  },
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.chevron_left),
+                                  tooltip: 'Previous month',
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    '${_fullMonthLabel(visibleMonth)} ${visibleMonth.year}',
+                                    textAlign: TextAlign.center,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleMedium,
+                                  ),
+                                ),
+                                IconButton(
+                                  onPressed: () {
+                                    setPopupState(() {
+                                      visibleMonth = DateTime(
+                                        visibleMonth.year,
+                                        visibleMonth.month + 1,
+                                        1,
+                                      );
+                                    });
+                                  },
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.chevron_right),
+                                  tooltip: 'Next month',
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children:
+                                  const [
+                                    'Mon',
+                                    'Tue',
+                                    'Wed',
+                                    'Thu',
+                                    'Fri',
+                                    'Sat',
+                                    'Sun',
+                                  ].map((label) {
+                                    return Expanded(
+                                      child: Center(
+                                        child: Text(
+                                          label,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.black54,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }).toList(),
+                            ),
+                            const SizedBox(height: 6),
+                            Expanded(
+                              child: GridView.builder(
+                                physics: const NeverScrollableScrollPhysics(),
+                                itemCount: totalCells,
+                                gridDelegate:
+                                    const SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: 7,
+                                      crossAxisSpacing: 4,
+                                      mainAxisSpacing: 4,
+                                    ),
+                                itemBuilder: (context, index) {
+                                  final dayNumber =
+                                      index - leadingEmptyDays + 1;
+                                  if (dayNumber < 1 ||
+                                      dayNumber > daysInMonth) {
+                                    return const SizedBox.shrink();
+                                  }
+
+                                  final day = DateTime(
+                                    visibleMonth.year,
+                                    visibleMonth.month,
+                                    dayNumber,
+                                  );
+                                  final isToday = _isSameDay(day, _todayOnly);
+                                  final isSelected = _isSameDay(
+                                    day,
+                                    selectedDate,
+                                  );
+
+                                  Color? backgroundColor;
+                                  Color? borderColor;
+                                  Color textColor = Colors.black87;
+
+                                  if (isSelected) {
+                                    backgroundColor = const Color(0xFFEAF2FF);
+                                    borderColor = const Color(0xFF6F9BFF);
+                                  }
+                                  if (isToday) {
+                                    backgroundColor = const Color(0xFFFFF1C7);
+                                    borderColor = const Color(0xFFFFC24A);
+                                    textColor = Colors.black;
+                                  }
+
+                                  return InkWell(
+                                    borderRadius: BorderRadius.circular(8),
+                                    onTap: () {
+                                      Navigator.of(dialogContext).pop(day);
+                                    },
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: backgroundColor,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color:
+                                              borderColor ?? Colors.transparent,
+                                        ),
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          '$dayNumber',
+                                          style: TextStyle(
+                                            color: textColor,
+                                            fontWeight: isToday
+                                                ? FontWeight.w700
+                                                : FontWeight.w500,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (pickedDate == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _planningAnchorDate = _dateOnly(pickedDate);
+    });
+    _syncWeekNotesControllerForDate(_planningAnchorDate);
   }
 
   String _timeRangeLabel(TaskItem task) {
@@ -4249,17 +4487,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
-              if (!_isSameDay(_startOfWeek(anchor), _startOfWeek(_todayOnly)))
-                IconButton(
-                  onPressed: () {
-                    setState(() {
-                      _planningAnchorDate = _todayOnly;
-                    });
-                    _syncWeekNotesControllerForDate(_planningAnchorDate);
-                  },
-                  icon: const Icon(Icons.today_rounded),
-                  tooltip: 'Go to current week',
-                ),
+              IconButton(
+                key: _goToCurrentWeekButtonKey,
+                onPressed: () {
+                  _showPlanningMonthPickerPopup();
+                },
+                icon: const Icon(Icons.today_rounded),
+                tooltip: 'Pick a date and jump to its week',
+              ),
               IconButton(
                 onPressed: () {
                   setState(() {
