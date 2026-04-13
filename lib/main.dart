@@ -2,9 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
 
 void main() {
   runZonedGuarded(
@@ -36,7 +43,16 @@ class TamagoApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(home: TodayPage());
+    return const MaterialApp(
+      locale: Locale('en', 'US'),
+      supportedLocales: [Locale('en', 'US')],
+      localizationsDelegates: [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      home: TodayPage(),
+    );
   }
 }
 
@@ -45,11 +61,11 @@ enum MainView { today, planning, projects }
 enum _TodayPane { tasks, timeline }
 
 enum TaskColorOption {
-  jaune('Jaune', Color(0xFFFFE79A)),
-  rouge('Rose corail', Color(0xFFFFB3C7)),
-  vert('Vert menthe', Color(0xFFBDECC8)),
-  bleu('Lilas', Color(0xFFC9C4FF)),
-  gris('Gris lavande', Color(0xFFE2DDEA)),
+  jaune('Yellow', Color(0xFFFFE79A)),
+  rouge('Coral pink', Color(0xFFFFB3C7)),
+  vert('Mint green', Color(0xFFBDECC8)),
+  bleu('Lilac', Color(0xFFC9C4FF)),
+  gris('Lavender gray', Color(0xFFE2DDEA)),
   violet('Violet', Color(0xFFE3B7FF));
 
   const TaskColorOption(this.label, this.color);
@@ -58,39 +74,170 @@ enum TaskColorOption {
 }
 
 enum ProjectColorOption {
-  jaune('Jaune', Color(0xFFFFE79A)),
-  vert('Vert menthe', Color(0xFFBDECC8)),
-  rouge('Rose corail', Color(0xFFFFB3C7)),
-  bleu('Lilas', Color(0xFFC9C4FF)),
-  gris('Gris lavande', Color(0xFFE2DDEA)),
-  marron('Pêche', Color(0xFFF1C9A6));
+  jaune('Yellow', Color(0xFFFFE79A)),
+  vert('Mint green', Color(0xFFBDECC8)),
+  marron('Peach', Color(0xFFF1C9A6)),
+  rouge('Coral pink', Color(0xFFFFB3C7)),
+  bleu('Lilac', Color(0xFFC9C4FF)),
+  gris('Lavender gray', Color(0xFFE2DDEA));
 
   const ProjectColorOption(this.label, this.color);
   final String label;
   final Color color;
 }
 
+String _normalizeStatus(String? rawStatus) {
+  final value = (rawStatus ?? '').trim();
+  switch (value) {
+    case 'To do':
+    case 'A faire':
+    case 'À faire':
+    case '� faire':
+      return 'To do';
+    case 'In progress':
+    case 'En cours':
+      return 'In progress';
+    case 'Done':
+    case 'Termine':
+    case 'Terminé':
+    case 'Termin�':
+      return 'Done';
+    default:
+      return value.isEmpty ? 'To do' : value;
+  }
+}
+
+String _normalizeWeekdayLabel(String rawWeekday) {
+  final value = rawWeekday.trim();
+  switch (value) {
+    case 'Monday':
+    case 'Lundi':
+      return 'Monday';
+    case 'Tuesday':
+    case 'Mardi':
+      return 'Tuesday';
+    case 'Wednesday':
+    case 'Mercredi':
+      return 'Wednesday';
+    case 'Thursday':
+    case 'Jeudi':
+      return 'Thursday';
+    case 'Friday':
+    case 'Vendredi':
+      return 'Friday';
+    case 'Saturday':
+    case 'Samedi':
+      return 'Saturday';
+    case 'Sunday':
+    case 'Dimanche':
+      return 'Sunday';
+    default:
+      return value;
+  }
+}
+
+String _normalizeRecurrence(String? rawRecurrence) {
+  final value = (rawRecurrence ?? '').trim();
+  if (value.isEmpty || value == 'Aucune' || value == 'Nonee') {
+    return 'None';
+  }
+  if (value == 'Daily' || value == 'Quotidienne') {
+    return 'Daily';
+  }
+  if (value == 'Weekly' || value == 'Hebdomadaire') {
+    return 'Weekly';
+  }
+  if (value == 'Monthly' || value == 'Mensuelle') {
+    return 'Monthly';
+  }
+  if (value.startsWith('Days:') || value.startsWith('Jours:')) {
+    final prefixLength = value.startsWith('Days:')
+        ? 'Days:'.length
+        : 'Jours:'.length;
+    final days = value
+        .substring(prefixLength)
+        .split(',')
+        .map((day) => _normalizeWeekdayLabel(day))
+        .where((day) => day.isNotEmpty)
+        .toList();
+    return days.isEmpty ? 'None' : 'Days:${days.join(',')}';
+  }
+  return value;
+}
+
+String _normalizeReminderOption(String rawOption) {
+  final value = rawOption.trim();
+  switch (value) {
+    case '1 day before':
+    case '1 jour avant':
+      return '1 day before';
+    case '1h before':
+    case '1h avant':
+      return '1h before';
+    case '10 min before':
+    case '10 min avant':
+      return '10 min before';
+    default:
+      return value;
+  }
+}
+
+String _fullWeekdayLabel(DateTime date) {
+  const labels = <String>[
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+  ];
+  return labels[date.weekday - 1];
+}
+
+String _fullMonthLabel(DateTime date) {
+  const labels = <String>[
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ];
+  return labels[date.month - 1];
+}
+
+String _formatLongDateUs(DateTime date) {
+  return '${_fullWeekdayLabel(date)}, ${_fullMonthLabel(date)} ${date.day}';
+}
+
 class TaskItem {
   TaskItem({
     required this.name,
-    required this.date,
-    DateTime? endDate,
+    this.date,
+    this.endDate,
     this.allDay = false,
     this.startTime,
     this.endTime,
     this.duration = '',
-    this.reminder = 'Aucun',
-    this.recurrence = 'Aucune',
-    this.status = 'À faire',
+    this.reminder = 'None',
+    this.recurrence = 'None',
+    this.status = 'To do',
     this.contact = '',
     this.project = '',
     this.projectId,
     this.color = TaskColorOption.bleu,
-  }) : endDate = endDate ?? date;
+  });
 
   String name;
-  DateTime date;
-  DateTime endDate;
+  DateTime? date;
+  DateTime? endDate;
   bool allDay;
   TimeOfDay? startTime;
   TimeOfDay? endTime;
@@ -106,8 +253,8 @@ class TaskItem {
   Map<String, dynamic> toJson() {
     return {
       'name': name,
-      'date': date.toIso8601String(),
-      'endDate': endDate.toIso8601String(),
+      'date': date?.toIso8601String(),
+      'endDate': endDate?.toIso8601String(),
       'allDay': allDay,
       'startTime': _timeToMinutes(startTime),
       'endTime': _timeToMinutes(endTime),
@@ -131,19 +278,15 @@ class TaskItem {
 
     return TaskItem(
       name: (json['name'] as String?) ?? '',
-      date:
-          DateTime.tryParse((json['date'] as String?) ?? '') ?? DateTime.now(),
-      endDate:
-          DateTime.tryParse((json['endDate'] as String?) ?? '') ??
-          DateTime.tryParse((json['date'] as String?) ?? '') ??
-          DateTime.now(),
+      date: DateTime.tryParse((json['date'] as String?) ?? ''),
+      endDate: DateTime.tryParse((json['endDate'] as String?) ?? ''),
       allDay: (json['allDay'] as bool?) ?? false,
       startTime: _minutesToTime(json['startTime'] as int?),
       endTime: _minutesToTime(json['endTime'] as int?),
       duration: (json['duration'] as String?) ?? '',
-      reminder: (json['reminder'] as String?) ?? 'Aucun',
-      recurrence: (json['recurrence'] as String?) ?? 'Aucune',
-      status: (json['status'] as String?) ?? 'À faire',
+      reminder: (json['reminder'] as String?) ?? 'None',
+      recurrence: _normalizeRecurrence(json['recurrence'] as String?),
+      status: _normalizeStatus(json['status'] as String?),
       contact: (json['contact'] as String?) ?? '',
       project: (json['project'] as String?) ?? '',
       projectId: json['projectId'] as String?,
@@ -201,6 +344,7 @@ class _GlobalSearchResult {
     required this.title,
     required this.subtitle,
     required this.matchedFields,
+    this.meta = '',
     this.onTap,
     this.noteContent,
     this.onNoteChanged,
@@ -210,6 +354,7 @@ class _GlobalSearchResult {
   final String title;
   final String subtitle;
   final List<_SearchMatchedField> matchedFields;
+  final String meta;
   final VoidCallback? onTap;
   final String? noteContent;
   final void Function(String)? onNoteChanged;
@@ -230,7 +375,7 @@ class ProjectItem {
     DateTime? startDate,
     this.endDate,
     this.description = '',
-    this.status = 'À faire',
+    this.status = 'To do',
     this.color = ProjectColorOption.bleu,
   }) : startDate = startDate ?? createdAt;
 
@@ -275,12 +420,12 @@ class ProjectItem {
       id:
           (json['id'] as String?) ??
           DateTime.now().millisecondsSinceEpoch.toString(),
-      name: (json['name'] as String?) ?? 'Projet',
+      name: (json['name'] as String?) ?? 'Project',
       createdAt: createdAt,
       startDate: startDate,
       endDate: endDate,
       description: (json['description'] as String?) ?? '',
-      status: (json['status'] as String?) ?? 'À faire',
+      status: _normalizeStatus(json['status'] as String?),
       color: resolvedColor,
     );
   }
@@ -294,6 +439,17 @@ class TodayPage extends StatefulWidget {
 }
 
 class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
+  static final FlutterLocalNotificationsPlugin _localNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+  static const AndroidNotificationChannel _taskReminderChannel =
+      AndroidNotificationChannel(
+        'tamago_task_reminders',
+        'Task reminders',
+        description: 'Reminders for scheduled Tamago tasks',
+        importance: Importance.max,
+        playSound: true,
+      );
+
   Widget buildMobileTodayTasksList() {
     final todayTasks = _tasksForDate(_todayOnly);
     return Container(
@@ -302,7 +458,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       child: todayTasks.isEmpty
           ? Center(
               child: Text(
-                'Aucune tâche pour aujourd’hui.',
+                'No tasks for today.',
                 style: Theme.of(context).textTheme.bodyLarge,
               ),
             )
@@ -342,21 +498,57 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   void _resetRecurringTasksStatus() {
     final today = _dateOnly(DateTime.now());
     for (final task in _tasks) {
+      final taskDate = task.date;
       if (_isRecurringTask(task) &&
-          task.status == 'Terminé' &&
-          !_isSameDay(task.date, today)) {
-        task.status = 'À faire';
+          task.status == 'Done' &&
+          taskDate != null &&
+          !_isSameDay(taskDate, today)) {
+        task.status = 'To do';
       }
     }
   }
 
+  DateTime _lastPendingTaskRollDate = DateTime.now();
+
+  bool _rollForwardPendingTasks(List<TaskItem> tasks, DateTime today) {
+    var changed = false;
+    for (final task in tasks) {
+      final taskDate = task.date;
+      if (task.status == 'Done' || _isRecurringTask(task) || taskDate == null) {
+        continue;
+      }
+      final taskStart = _dateOnly(taskDate);
+      final taskEnd = _dateOnly(task.endDate ?? taskDate);
+      if (!taskEnd.isBefore(today)) {
+        continue;
+      }
+      final spanDays = taskEnd.difference(taskStart).inDays;
+      task.date = today;
+      task.endDate = spanDays <= 0
+          ? today
+          : today.add(Duration(days: spanDays));
+      changed = true;
+    }
+    return changed;
+  }
+
+  void _rollForwardPendingTasksIfNeeded(DateTime today) {
+    if (_isSameDay(_lastPendingTaskRollDate, today)) {
+      return;
+    }
+    _lastPendingTaskRollDate = today;
+    if (_rollForwardPendingTasks(_tasks, today)) {
+      unawaited(_saveTasks());
+    }
+  }
+
   Duration? _reminderOffset(String option) {
-    switch (option) {
-      case '1 jour avant':
+    switch (_normalizeReminderOption(option)) {
+      case '1 day before':
         return const Duration(days: 1);
-      case '1h avant':
+      case '1h before':
         return const Duration(hours: 1);
-      case '10 min avant':
+      case '10 min before':
         return const Duration(minutes: 10);
       default:
         return null;
@@ -364,7 +556,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   String _encodeReminderSelections(Set<String> selections) {
-    if (selections.isEmpty) return 'Aucun';
+    if (selections.isEmpty) return 'None';
     return selections.join(' | ');
   }
 
@@ -395,10 +587,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   static const MethodChannel _androidWidgetChannel = MethodChannel(
     'tamago/widget',
   );
+  static const MethodChannel _androidNotifChannel = MethodChannel(
+    'tamago/notifications',
+  );
   static const List<String> _reminderOptions = <String>[
-    '1 jour avant',
-    '1h avant',
-    '10 min avant',
+    '1 day before',
+    '1h before',
+    '10 min before',
   ];
 
   final TextEditingController _quickAddTaskController = TextEditingController();
@@ -409,6 +604,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   final TextEditingController _headerSearchController = TextEditingController();
   final TextEditingController _weekNotesController = TextEditingController();
   final ScrollController _planningDayScrollController = ScrollController();
+  final GlobalKey _goToCurrentWeekButtonKey = GlobalKey();
 
   final List<TaskItem> _tasks = [];
   final List<ProjectItem> _projects = [];
@@ -418,6 +614,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       <String, _ReminderNotice>{};
   final Set<String> _dismissedReminderIds = <String>{};
   final Map<String, String> _weekNotesByWeekKey = <String, String>{};
+  bool _mobileNotificationsReady = false;
 
   MainView _currentView = MainView.today;
   DateTime _planningAnchorDate = DateTime.now();
@@ -441,6 +638,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     );
     _loadData();
     _loadWeekNotes();
+    unawaited(_initializeMobileNotifications());
+    unawaited(_requestBatteryOptimizationExemption());
   }
 
   @override
@@ -483,16 +682,238 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         first.day == second.day;
   }
 
+  bool get _supportsScheduledTaskNotifications {
+    if (kIsWeb) {
+      return false;
+    }
+
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+  }
+
+  Future<void> _initializeMobileNotifications() async {
+    if (!_supportsScheduledTaskNotifications || _mobileNotificationsReady) {
+      return;
+    }
+
+    tz.initializeTimeZones();
+    try {
+      final timezoneName = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(timezoneName));
+      debugPrint('[Tamago][Notif] timezone=$timezoneName');
+    } catch (e) {
+      debugPrint('[Tamago][Notif] timezone error: $e');
+    }
+
+    const initializationSettings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
+    );
+
+    await _localNotificationsPlugin.initialize(initializationSettings);
+
+    final androidImpl = _localNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    await androidImpl?.createNotificationChannel(_taskReminderChannel);
+
+    final notifGranted = await androidImpl?.requestNotificationsPermission();
+    debugPrint('[Tamago][Notif] notifPermission=$notifGranted');
+
+    // Android 12+ requires user to grant exact alarm permission via Settings
+    final canExact = await androidImpl?.canScheduleExactNotifications();
+    debugPrint('[Tamago][Notif] canScheduleExact=$canExact');
+    if (canExact == false) {
+      await androidImpl?.requestExactAlarmsPermission();
+    }
+
+    final iosImplementation = _localNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin
+        >();
+    await iosImplementation?.requestPermissions(
+      alert: true,
+      badge: false,
+      sound: true,
+    );
+
+    _mobileNotificationsReady = true;
+    debugPrint('[Tamago][Notif] initialized, tasks=${_tasks.length}');
+    // Reschedule now that init is done (tasks may already be loaded)
+    await _scheduleMobileTaskNotifications();
+  }
+
+  Iterable<DateTime> _notificationOccurrenceDatesForTask(
+    TaskItem task,
+    DateTime startDay,
+    DateTime endDay,
+  ) sync* {
+    if (task.date == null) {
+      return;
+    }
+
+    var currentDay = startDay;
+    while (!currentDay.isAfter(endDay)) {
+      if (_taskOccursOnDate(task, currentDay)) {
+        yield currentDay;
+      }
+      currentDay = currentDay.add(const Duration(days: 1));
+    }
+  }
+
+  int _notificationIntId(String rawValue) {
+    var hash = 0;
+    for (final codeUnit in rawValue.codeUnits) {
+      hash = (hash * 31 + codeUnit) & 0x7fffffff;
+    }
+    return hash;
+  }
+
+  Future<void> _scheduleMobileTaskNotifications() async {
+    if (!_supportsScheduledTaskNotifications || !_mobileNotificationsReady) {
+      debugPrint(
+        '[Tamago][Notif] skip: supported=$_supportsScheduledTaskNotifications ready=$_mobileNotificationsReady',
+      );
+      return;
+    }
+
+    await _localNotificationsPlugin.cancelAll();
+
+    // Determine whether exact alarms are permitted
+    final androidImpl = _localNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >();
+    final canExact =
+        await androidImpl?.canScheduleExactNotifications() ?? false;
+    final scheduleMode = canExact
+        ? AndroidScheduleMode.exactAllowWhileIdle
+        : AndroidScheduleMode.inexactAllowWhileIdle;
+    debugPrint(
+      '[Tamago][Notif] scheduling with mode=${canExact ? "exact" : "inexact"}, tasks=${_tasks.length}',
+    );
+
+    final now = DateTime.now();
+    final startDay = _dateOnly(now);
+    final endDay = startDay.add(const Duration(days: 30));
+    const notificationDetails = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'tamago_task_reminders',
+        'Task reminders',
+        channelDescription: 'Reminders for scheduled Tamago tasks',
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        category: AndroidNotificationCategory.reminder,
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: false,
+        presentSound: true,
+        interruptionLevel: InterruptionLevel.timeSensitive,
+      ),
+    );
+
+    var scheduledCount = 0;
+    for (final task in _tasks) {
+      if (task.startTime == null) {
+        continue;
+      }
+
+      final reminderSelections = _parseReminderSelections(task.reminder);
+      if (reminderSelections.isEmpty) {
+        continue;
+      }
+
+      for (final occurrenceDate in _notificationOccurrenceDatesForTask(
+        task,
+        startDay,
+        endDay,
+      )) {
+        final startDateTime = _withTime(occurrenceDate, task.startTime!);
+        for (final reminderOption in reminderSelections) {
+          final offset = _reminderOffset(reminderOption);
+          if (offset == null) {
+            continue;
+          }
+
+          final scheduledAt = startDateTime.subtract(offset);
+          if (!scheduledAt.isAfter(now)) {
+            continue;
+          }
+
+          final reminderId = _reminderId(task, occurrenceDate, reminderOption);
+          await _localNotificationsPlugin.zonedSchedule(
+            _notificationIntId(reminderId),
+            task.name,
+            'Reminder ${_normalizeReminderOption(reminderOption)} - ${_formatMonthDayUs(occurrenceDate)} ${_formatTimeUs(task.startTime!)}',
+            tz.TZDateTime.fromMillisecondsSinceEpoch(
+              tz.local,
+              scheduledAt.millisecondsSinceEpoch,
+            ),
+            notificationDetails,
+            androidScheduleMode: scheduleMode,
+          );
+          scheduledCount++;
+          debugPrint(
+            '[Tamago][Notif] scheduled "${task.name}" at $scheduledAt',
+          );
+        }
+      }
+    }
+    debugPrint('[Tamago][Notif] total scheduled: $scheduledCount');
+    try {
+      final pending = await _localNotificationsPlugin
+          .pendingNotificationRequests();
+      debugPrint('[Tamago][Notif] plugin pending count=${pending.length}');
+      for (final request in pending.take(5)) {
+        debugPrint(
+          '[Tamago][Notif] pending id=${request.id} title=${request.title}',
+        );
+      }
+    } catch (e) {
+      debugPrint('[Tamago][Notif] pending read error: $e');
+    }
+  }
+
+  Future<void> _requestBatteryOptimizationExemption() async {
+    if (!_supportsScheduledTaskNotifications) return;
+    if (defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      final ignoring =
+          await _androidNotifChannel.invokeMethod<bool>(
+            'isIgnoringBatteryOptimizations',
+          ) ??
+          true;
+      debugPrint('[Tamago][Notif] isIgnoringBatteryOptimizations=$ignoring');
+      if (!ignoring) {
+        await _androidNotifChannel.invokeMethod<void>(
+          'requestIgnoreBatteryOptimizations',
+        );
+      }
+    } catch (e) {
+      debugPrint('[Tamago][Notif] battery opt error: $e');
+    }
+  }
+
   List<String> _parseReminderSelections(String rawReminder) {
     final trimmed = rawReminder.trim();
-    if (trimmed.isEmpty || trimmed == 'Aucun') {
+    if (trimmed.isEmpty || trimmed == 'None') {
       return const <String>[];
     }
     final tokens = trimmed
         .split(RegExp(r'\||,'))
         .map((value) => value.trim())
-        .where((value) => value.isNotEmpty && value != 'Aucun');
-    return tokens.toList();
+        .where((value) => value.isNotEmpty && value != 'None')
+        .map(_normalizeReminderOption)
+        .where((value) => value != 'None')
+        .toList();
+    return tokens;
   }
 
   String _reminderId(
@@ -502,7 +923,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   ) {
     final start = task.startTime;
     final startLabel = start == null ? 'none' : '${start.hour}:${start.minute}';
-    return '${task.name}|${task.date.toIso8601String()}|${task.endDate.toIso8601String()}|$startLabel|${occurrenceDate.toIso8601String()}|$reminderOption';
+    final dateLabel = task.date?.toIso8601String() ?? 'none';
+    final endDateLabel = task.endDate?.toIso8601String() ?? 'none';
+    return '${task.name}|$dateLabel|$endDateLabel|$startLabel|${occurrenceDate.toIso8601String()}|$reminderOption';
   }
 
   void _refreshLiveNowAndReminders() {
@@ -512,6 +935,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
     final now = DateTime.now();
     final today = _dateOnly(now);
+    _rollForwardPendingTasksIfNeeded(today);
     final tomorrow = today.add(const Duration(days: 1));
     final newNotices = <_ReminderNotice>[];
 
@@ -551,7 +975,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 id: reminderId,
                 title: task.name,
                 subtitle:
-                    'Rappel $reminderOption • ${_twoDigits(occurrenceDate.day)}/${_twoDigits(occurrenceDate.month)} ${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)}',
+                    'Reminder ${_normalizeReminderOption(reminderOption)} - ${_formatMonthDayUs(occurrenceDate)} ${_formatTimeUs(task.startTime!)}',
               ),
             );
           }
@@ -579,21 +1003,21 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     });
   }
 
-  int? _weekdayFromFrenchLabel(String label) {
+  int? _weekdayFromLabel(String label) {
     switch (label) {
-      case 'Lundi':
+      case 'Monday':
         return DateTime.monday;
-      case 'Mardi':
+      case 'Tuesday':
         return DateTime.tuesday;
-      case 'Mercredi':
+      case 'Wednesday':
         return DateTime.wednesday;
-      case 'Jeudi':
+      case 'Thursday':
         return DateTime.thursday;
-      case 'Vendredi':
+      case 'Friday':
         return DateTime.friday;
-      case 'Samedi':
+      case 'Saturday':
         return DateTime.saturday;
-      case 'Dimanche':
+      case 'Sunday':
         return DateTime.sunday;
       default:
         return null;
@@ -601,9 +1025,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   bool _taskOccursOnDate(TaskItem task, DateTime date) {
+    if (task.date == null) {
+      return false;
+    }
+
     final day = _dateOnly(date);
-    final taskDate = _dateOnly(task.date);
-    final taskEndDate = _dateOnly(task.endDate);
+    final taskDate = _dateOnly(task.date!);
+    final taskEndDate = _dateOnly(task.endDate ?? task.date!);
     if (day.isBefore(taskDate)) {
       return false;
     }
@@ -612,28 +1040,28 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     }
 
     switch (task.recurrence) {
-      case 'Aucune':
+      case 'None':
         return !day.isBefore(taskDate) && !day.isAfter(taskEndDate);
-      case 'Quotidienne':
+      case 'Daily':
         return !day.isBefore(taskDate) && !day.isAfter(taskEndDate);
-      case 'Mensuelle':
+      case 'Monthly':
         return !day.isBefore(taskDate) &&
             !day.isAfter(taskEndDate) &&
             day.day == taskDate.day;
-      case 'Hebdomadaire':
+      case 'Weekly':
         return !day.isBefore(taskDate) &&
             !day.isAfter(taskEndDate) &&
             day.weekday == taskDate.weekday;
       default:
-        if (task.recurrence.startsWith('Jours:')) {
+        if (task.recurrence.startsWith('Days:')) {
           final rawDays = task.recurrence
-              .substring('Jours:'.length)
+              .substring('Days:'.length)
               .split(',')
               .map((value) => value.trim())
               .where((value) => value.isNotEmpty)
               .toList();
           final weekdays = rawDays
-              .map(_weekdayFromFrenchLabel)
+              .map(_weekdayFromLabel)
               .whereType<int>()
               .toSet();
           return !day.isBefore(taskDate) &&
@@ -679,7 +1107,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   String _dayLabel(DateTime date) {
-    const labels = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+    const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     return labels[date.weekday - 1];
   }
 
@@ -687,15 +1115,273 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     return value.toString().padLeft(2, '0');
   }
 
+  String _formatMonthDayUs(DateTime value) {
+    return '${_twoDigits(value.month)}/${_twoDigits(value.day)}';
+  }
+
+  String _formatDateUs(DateTime value) {
+    return '${_formatMonthDayUs(value)}/${value.year}';
+  }
+
+  String _formatOptionalDateUs(DateTime? value, {String fallback = 'Not set'}) {
+    if (value == null) {
+      return fallback;
+    }
+    return _formatDateUs(value);
+  }
+
+  String _formatTimeUs(TimeOfDay value) {
+    final hour = value.hourOfPeriod == 0 ? 12 : value.hourOfPeriod;
+    final suffix = value.period == DayPeriod.am ? 'AM' : 'PM';
+    return '$hour:${_twoDigits(value.minute)} $suffix';
+  }
+
+  Future<void> _showPlanningMonthPickerPopup() async {
+    final buttonContext = _goToCurrentWeekButtonKey.currentContext;
+    if (buttonContext == null) {
+      return;
+    }
+
+    final buttonBox = buttonContext.findRenderObject() as RenderBox?;
+    final overlayBox =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (buttonBox == null || overlayBox == null) {
+      return;
+    }
+
+    final topLeft = buttonBox.localToGlobal(Offset.zero, ancestor: overlayBox);
+    final bottomRight = buttonBox.localToGlobal(
+      buttonBox.size.bottomRight(Offset.zero),
+      ancestor: overlayBox,
+    );
+    final overlaySize = overlayBox.size;
+
+    final pickedDate = await showDialog<DateTime>(
+      context: context,
+      barrierDismissible: true,
+      barrierColor: Colors.black12,
+      builder: (dialogContext) {
+        DateTime visibleMonth = DateTime(_todayOnly.year, _todayOnly.month, 1);
+        final selectedDate = _dateOnly(_planningAnchorDate);
+
+        return StatefulBuilder(
+          builder: (context, setPopupState) {
+            final firstOfMonth = DateTime(
+              visibleMonth.year,
+              visibleMonth.month,
+              1,
+            );
+            final leadingEmptyDays = firstOfMonth.weekday - 1;
+            final daysInMonth = DateTime(
+              visibleMonth.year,
+              visibleMonth.month + 1,
+              0,
+            ).day;
+            final totalCells = ((leadingEmptyDays + daysInMonth + 6) ~/ 7) * 7;
+
+            const popupWidth = 290.0;
+            const popupHeight = 324.0;
+            final left = topLeft.dx.clamp(
+              8.0,
+              (overlaySize.width - popupWidth - 8).clamp(8.0, double.infinity),
+            );
+            final top = (bottomRight.dy + 6).clamp(
+              8.0,
+              (overlaySize.height - popupHeight - 8).clamp(
+                8.0,
+                double.infinity,
+              ),
+            );
+
+            return Stack(
+              children: [
+                Positioned(
+                  left: left,
+                  top: top,
+                  child: Material(
+                    elevation: 10,
+                    borderRadius: BorderRadius.circular(14),
+                    color: Colors.white,
+                    child: SizedBox(
+                      width: popupWidth,
+                      height: popupHeight,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                IconButton(
+                                  onPressed: () {
+                                    setPopupState(() {
+                                      visibleMonth = DateTime(
+                                        visibleMonth.year,
+                                        visibleMonth.month - 1,
+                                        1,
+                                      );
+                                    });
+                                  },
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.chevron_left),
+                                  tooltip: 'Previous month',
+                                ),
+                                Expanded(
+                                  child: Text(
+                                    '${_fullMonthLabel(visibleMonth)} ${visibleMonth.year}',
+                                    textAlign: TextAlign.center,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleMedium,
+                                  ),
+                                ),
+                                IconButton(
+                                  onPressed: () {
+                                    setPopupState(() {
+                                      visibleMonth = DateTime(
+                                        visibleMonth.year,
+                                        visibleMonth.month + 1,
+                                        1,
+                                      );
+                                    });
+                                  },
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.chevron_right),
+                                  tooltip: 'Next month',
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children:
+                                  const [
+                                    'Mon',
+                                    'Tue',
+                                    'Wed',
+                                    'Thu',
+                                    'Fri',
+                                    'Sat',
+                                    'Sun',
+                                  ].map((label) {
+                                    return Expanded(
+                                      child: Center(
+                                        child: Text(
+                                          label,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.black54,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }).toList(),
+                            ),
+                            const SizedBox(height: 6),
+                            Expanded(
+                              child: GridView.builder(
+                                physics: const NeverScrollableScrollPhysics(),
+                                itemCount: totalCells,
+                                gridDelegate:
+                                    const SliverGridDelegateWithFixedCrossAxisCount(
+                                      crossAxisCount: 7,
+                                      crossAxisSpacing: 4,
+                                      mainAxisSpacing: 4,
+                                    ),
+                                itemBuilder: (context, index) {
+                                  final dayNumber =
+                                      index - leadingEmptyDays + 1;
+                                  if (dayNumber < 1 ||
+                                      dayNumber > daysInMonth) {
+                                    return const SizedBox.shrink();
+                                  }
+
+                                  final day = DateTime(
+                                    visibleMonth.year,
+                                    visibleMonth.month,
+                                    dayNumber,
+                                  );
+                                  final isToday = _isSameDay(day, _todayOnly);
+                                  final isSelected = _isSameDay(
+                                    day,
+                                    selectedDate,
+                                  );
+
+                                  Color? backgroundColor;
+                                  Color? borderColor;
+                                  Color textColor = Colors.black87;
+
+                                  if (isSelected) {
+                                    backgroundColor = const Color(0xFFEAF2FF);
+                                    borderColor = const Color(0xFF6F9BFF);
+                                  }
+                                  if (isToday) {
+                                    backgroundColor = const Color(0xFFFFF1C7);
+                                    borderColor = const Color(0xFFFFC24A);
+                                    textColor = Colors.black;
+                                  }
+
+                                  return InkWell(
+                                    borderRadius: BorderRadius.circular(8),
+                                    onTap: () {
+                                      Navigator.of(dialogContext).pop(day);
+                                    },
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: backgroundColor,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color:
+                                              borderColor ?? Colors.transparent,
+                                        ),
+                                      ),
+                                      child: Center(
+                                        child: Text(
+                                          '$dayNumber',
+                                          style: TextStyle(
+                                            color: textColor,
+                                            fontWeight: isToday
+                                                ? FontWeight.w700
+                                                : FontWeight.w500,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (pickedDate == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _planningAnchorDate = _dateOnly(pickedDate);
+    });
+    _syncWeekNotesControllerForDate(_planningAnchorDate);
+  }
+
   String _timeRangeLabel(TaskItem task) {
     if (task.startTime == null || task.endTime == null) {
-      return 'Sans horaire';
+      return 'No time set';
     }
     return '${_twoDigits(task.startTime!.hour)}:${_twoDigits(task.startTime!.minute)} - ${_twoDigits(task.endTime!.hour)}:${_twoDigits(task.endTime!.minute)}';
   }
 
   bool _isRecurringTask(TaskItem task) {
-    return task.recurrence != 'Aucune';
+    return task.recurrence != 'None';
   }
 
   Widget _buildTaskNameWithRecurrenceIcon(
@@ -725,28 +1411,33 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   Future<void> _openNewTaskForDate(DateTime date) async {
-    final newTask = TaskItem(name: 'Nouvelle tache', date: _dateOnly(date));
+    final normalizedDate = _dateOnly(date);
+    final newTask = TaskItem(
+      name: 'New task',
+      date: normalizedDate,
+      endDate: normalizedDate,
+    );
     await _openTaskEditor(newTask, isNew: true);
   }
 
   String _nextStatus(String currentStatus) {
     switch (currentStatus) {
-      case 'À faire':
-        return 'En cours';
-      case 'En cours':
-        return 'Terminé';
-      case 'Terminé':
-        return 'À faire';
+      case 'To do':
+        return 'In progress';
+      case 'In progress':
+        return 'Done';
+      case 'Done':
+        return 'To do';
       default:
-        return 'À faire';
+        return 'To do';
     }
   }
 
   IconData _statusIcon(String status) {
     switch (status) {
-      case 'En cours':
+      case 'In progress':
         return Icons.timelapse_rounded;
-      case 'Terminé':
+      case 'Done':
         return Icons.check_circle_rounded;
       default:
         return Icons.radio_button_unchecked_rounded;
@@ -756,7 +1447,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   List<TaskItem> get _todayTasks {
     return _tasksForDate(
       _todayOnly,
-    ).where((task) => task.status != 'Terminé').toList();
+    ).where((task) => task.status != 'Done').toList();
   }
 
   ProjectItem? get _selectedProject {
@@ -773,9 +1464,37 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   }
 
   List<TaskItem> _tasksForProject(ProjectItem project) {
-    return _tasks
+    final tasks = _tasks
         .where((task) => _taskBelongsToProject(task, project))
         .toList();
+
+    tasks.sort((a, b) {
+      final aDate = a.date;
+      final bDate = b.date;
+      if (aDate == null && bDate != null) {
+        return -1;
+      }
+      if (aDate != null && bDate == null) {
+        return 1;
+      }
+      if (aDate != null && bDate != null) {
+        final byStartDate = aDate.compareTo(bDate);
+        if (byStartDate != 0) {
+          return byStartDate;
+        }
+
+        final aEndDate = a.endDate ?? aDate;
+        final bEndDate = b.endDate ?? bDate;
+        final byEndDate = aEndDate.compareTo(bEndDate);
+        if (byEndDate != 0) {
+          return byEndDate;
+        }
+      }
+
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+
+    return tasks;
   }
 
   bool _taskBelongsToProject(TaskItem task, ProjectItem project) {
@@ -835,7 +1554,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     }
 
     setState(() {
-      _tasks.insert(0, TaskItem(name: taskName, date: _todayOnly));
+      _tasks.insert(
+        0,
+        TaskItem(name: taskName, date: _todayOnly, endDate: _todayOnly),
+      );
       _quickAddTaskController.clear();
     });
     _saveTasks();
@@ -918,7 +1640,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
     final task = TaskItem(
       name: taskName,
-      date: _todayOnly,
       project: selectedProject.name,
       projectId: selectedProject.id,
       color: _taskColorFromProjectColor(selectedProject.color),
@@ -977,6 +1698,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
+    final today = _todayOnly;
+    final didRollPendingTasks = _rollForwardPendingTasks(loadedTasks, today);
+    _lastPendingTaskRollDate = today;
+
     if (!mounted) {
       return;
     }
@@ -993,8 +1718,18 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
       _resetRecurringTasksStatus();
     });
-    _refreshLiveNowAndReminders();
-    _updateAndroidTodayWidget();
+    if (didRollPendingTasks) {
+      unawaited(_saveTasks());
+    } else {
+      _refreshLiveNowAndReminders();
+      _updateAndroidTodayWidget();
+      // Always reschedule after load — init may have finished first with empty tasks
+      unawaited(_scheduleMobileTaskNotifications());
+    }
+    // If init finished before load, reschedule now that tasks are populated
+    if (_mobileNotificationsReady) {
+      unawaited(_scheduleMobileTaskNotifications());
+    }
   }
 
   Future<void> _saveTasks() async {
@@ -1003,6 +1738,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     await prefs.setString(_tasksStorageKey, jsonEncode(payload));
     _refreshLiveNowAndReminders();
     _updateAndroidTodayWidget();
+    await _scheduleMobileTaskNotifications();
   }
 
   Future<void> _updateAndroidTodayWidget() async {
@@ -1135,6 +1871,56 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
         .toList();
   }
 
+  String _collapseSearchText(String value) {
+    return value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  List<String> _extractSentences(String value) {
+    final normalized = value.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final sentences = <String>[];
+    final buffer = StringBuffer();
+
+    void flush() {
+      final sentence = _collapseSearchText(buffer.toString());
+      if (sentence.isNotEmpty) {
+        sentences.add(sentence);
+      }
+      buffer.clear();
+    }
+
+    for (var index = 0; index < normalized.length; index++) {
+      final character = normalized[index];
+      buffer.write(character);
+      final isSentenceBreak =
+          character == '.' ||
+          character == '!' ||
+          character == '?' ||
+          character == '\n';
+      if (isSentenceBreak) {
+        flush();
+      }
+    }
+
+    flush();
+    return sentences;
+  }
+
+  String _matchingNoteExcerpt(List<String> tokens, String noteText) {
+    final sentences = _extractSentences(noteText);
+    final matches = sentences
+        .where((sentence) => _containsAtLeastOneToken(tokens, sentence))
+        .toList();
+    if (matches.isNotEmpty) {
+      return matches.join(' ');
+    }
+
+    final compact = _collapseSearchText(noteText);
+    if (compact.isEmpty) {
+      return 'Empty note';
+    }
+    return compact.length > 160 ? '${compact.substring(0, 160)}...' : compact;
+  }
+
   List<_GlobalSearchResult> _buildGlobalSearchResults(String query) {
     final tokens = _searchTokens(query);
     if (tokens.isEmpty) {
@@ -1144,11 +1930,12 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final results = <_GlobalSearchResult>[];
 
     for (final task in _tasks) {
-      final dateLabel =
-          '${_twoDigits(task.date.day)}/${_twoDigits(task.date.month)}/${task.date.year}';
+      final dateLabel = _formatOptionalDateUs(task.date, fallback: 'No date');
+      final linkedProject = _projectForTask(task);
+      final projectName = linkedProject?.name ?? task.project;
       final taskText = [
         task.name,
-        task.project,
+        projectName,
         task.contact,
         task.status,
         task.recurrence,
@@ -1156,20 +1943,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       ].join(' ');
       if (_matchesTokens(tokens, taskText)) {
         final matchedFields = _collectMatchedFields(tokens, [
-          MapEntry('Nom', task.name),
-          MapEntry('Projet', task.project),
+          MapEntry('Name', task.name),
+          MapEntry('Project', task.project),
           MapEntry('Contact', task.contact),
-          MapEntry('Statut', task.status),
-          MapEntry('Récurrence', task.recurrence),
+          MapEntry('Status', task.status),
+          MapEntry('Recurrence', task.recurrence),
           MapEntry('Date', dateLabel),
         ]);
         results.add(
           _GlobalSearchResult(
-            category: 'Tache',
+            category: 'Task',
             title: task.name,
-            subtitle:
-                '$dateLabel - ${task.project.isEmpty ? 'Sans projet' : task.project}',
+            subtitle: projectName.isEmpty ? '' : 'Project: $projectName',
             matchedFields: matchedFields,
+            meta: dateLabel,
             onTap: () {
               _openTaskEditor(task);
             },
@@ -1186,18 +1973,17 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       ].join(' ');
       if (_matchesTokens(tokens, projectText)) {
         final matchedFields = _collectMatchedFields(tokens, [
-          MapEntry('Nom', project.name),
+          MapEntry('Name', project.name),
           MapEntry('Description', project.description),
-          MapEntry('Statut', project.status),
+          MapEntry('Status', project.status),
         ]);
         results.add(
           _GlobalSearchResult(
-            category: 'Projet',
-            title: project.name,
-            subtitle: project.description.isEmpty
-                ? project.status
-                : '${project.status} - ${project.description}',
+            category: 'Project',
+            title: 'Project: ${project.name}',
+            subtitle: '',
             matchedFields: matchedFields,
+            meta: _formatDateUs(project.startDate),
             onTap: () {
               _openProjectEditor(project);
             },
@@ -1209,22 +1995,18 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     for (final entry in _weekNotesByWeekKey.entries) {
       final noteText = '${entry.key} ${entry.value}';
       if (_matchesTokens(tokens, noteText)) {
-        final compact = entry.value.replaceAll('\n', ' ').trim();
         final parsedWeek = DateTime.tryParse(entry.key);
         final weekKey = entry.key;
+        final excerpt = _matchingNoteExcerpt(tokens, entry.value);
         final matchedFields = _collectMatchedFields(tokens, [
-          MapEntry('Semaine', entry.key),
+          MapEntry('Week', entry.key),
           MapEntry('Note', entry.value),
         ]);
         results.add(
           _GlobalSearchResult(
             category: 'Note',
-            title: 'Semaine ${entry.key}',
-            subtitle: compact.isEmpty
-                ? 'Note vide'
-                : (compact.length > 110
-                      ? '${compact.substring(0, 110)}...'
-                      : compact),
+            title: 'Note',
+            subtitle: excerpt,
             matchedFields: matchedFields,
             onTap: parsedWeek == null
                 ? null
@@ -1259,9 +2041,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final query = _headerSearchController.text.trim();
     if (query.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Entre des mots pour lancer la recherche.'),
-        ),
+        const SnackBar(content: Text('Enter keywords to start searching.')),
       );
       return;
     }
@@ -1280,9 +2060,19 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     final durationController = TextEditingController(text: task.duration);
     final contactController = TextEditingController(text: task.contact);
 
-    DateTime selectedDate = task.date;
-    DateTime selectedEndDate = task.endDate;
-    if (selectedEndDate.isBefore(selectedDate)) {
+    final defaultNewTaskDate = isNew && _currentView != MainView.projects
+        ? _todayOnly
+        : null;
+    DateTime? selectedDate = task.date == null
+        ? defaultNewTaskDate
+        : _dateOnly(task.date!);
+    DateTime? selectedEndDate = task.endDate == null
+        ? selectedDate
+        : _dateOnly(task.endDate!);
+    if (selectedDate == null) {
+      selectedEndDate = null;
+    } else if (selectedEndDate != null &&
+        selectedEndDate.isBefore(selectedDate)) {
       selectedEndDate = selectedDate;
     }
     bool allDay = task.allDay;
@@ -1292,29 +2082,29 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     String recurrence = task.recurrence;
     String status = task.status;
     const weekdays = <String>[
-      'Lundi',
-      'Mardi',
-      'Mercredi',
-      'Jeudi',
-      'Vendredi',
-      'Samedi',
-      'Dimanche',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
     ];
 
-    String recurrenceMode = 'Aucune';
+    String recurrenceMode = 'None';
     final selectedWeekdays = <String>{};
 
-    if (recurrence == 'Quotidienne' ||
-        recurrence == 'Mensuelle' ||
-        recurrence == 'Aucune') {
+    if (recurrence == 'Daily' ||
+        recurrence == 'Monthly' ||
+        recurrence == 'None') {
       recurrenceMode = recurrence;
-    } else if (recurrence == 'Hebdomadaire') {
-      recurrenceMode = 'Jours de la semaine';
+    } else if (recurrence == 'Weekly' && selectedDate != null) {
+      recurrenceMode = 'Weekdays';
       selectedWeekdays.add(weekdays[selectedDate.weekday - 1]);
-    } else if (recurrence.startsWith('Jours:')) {
-      recurrenceMode = 'Jours de la semaine';
+    } else if (recurrence.startsWith('Days:')) {
+      recurrenceMode = 'Weekdays';
       final rawDays = recurrence
-          .substring('Jours:'.length)
+          .substring('Days:'.length)
           .split(',')
           .map((day) => day.trim())
           .where((day) => day.isNotEmpty);
@@ -1329,11 +2119,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
-    String timeLabel(TimeOfDay? value) {
+    String timeLabel(BuildContext context, TimeOfDay? value) {
       if (value == null) {
         return '--:--';
       }
-      return '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+      return MaterialLocalizations.of(
+        context,
+      ).formatTimeOfDay(value, alwaysUse24HourFormat: false);
     }
 
     int toMinutes(TimeOfDay value) {
@@ -1474,25 +2266,43 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             Future<void> pickDate() async {
               final pickedDate = await showDatePicker(
                 context: context,
-                initialDate: selectedDate,
+                initialDate: selectedDate ?? _todayOnly,
                 firstDate: DateTime(2020),
                 lastDate: DateTime(2100),
               );
               if (pickedDate != null) {
                 setModalState(() {
                   selectedDate = pickedDate;
-                  if (selectedEndDate.isBefore(selectedDate)) {
+                  if (selectedEndDate != null &&
+                      selectedEndDate!.isBefore(selectedDate!)) {
                     selectedEndDate = selectedDate;
                   }
                 });
               }
             }
 
+            void clearDate() {
+              setModalState(() {
+                selectedDate = null;
+                selectedEndDate = null;
+                startTime = null;
+                endTime = null;
+                allDay = false;
+                durationController.clear();
+                selectedReminders.clear();
+                recurrenceMode = 'None';
+                selectedWeekdays.clear();
+              });
+            }
+
             Future<void> pickEndDate() async {
+              if (selectedDate == null) {
+                return;
+              }
               final pickedDate = await showDatePicker(
                 context: context,
-                initialDate: selectedEndDate,
-                firstDate: selectedDate,
+                initialDate: selectedEndDate ?? selectedDate!,
+                firstDate: selectedDate!,
                 lastDate: DateTime(2100),
               );
               if (pickedDate != null) {
@@ -1502,10 +2312,23 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               }
             }
 
+            void clearEndDate() {
+              setModalState(() {
+                selectedEndDate = null;
+              });
+            }
+
             Future<void> pickStartTime() async {
               final picked = await showTimePicker(
                 context: context,
                 initialTime: startTime ?? const TimeOfDay(hour: 9, minute: 0),
+                builder: (context, child) {
+                  final mediaQuery = MediaQuery.of(context);
+                  return MediaQuery(
+                    data: mediaQuery.copyWith(alwaysUse24HourFormat: false),
+                    child: child ?? const SizedBox.shrink(),
+                  );
+                },
               );
               if (picked != null) {
                 setModalState(() {
@@ -1520,6 +2343,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               final picked = await showTimePicker(
                 context: context,
                 initialTime: endTime ?? const TimeOfDay(hour: 10, minute: 0),
+                builder: (context, child) {
+                  final mediaQuery = MediaQuery.of(context);
+                  return MediaQuery(
+                    data: mediaQuery.copyWith(alwaysUse24HourFormat: false),
+                    child: child ?? const SizedBox.shrink(),
+                  );
+                },
               );
               if (picked != null) {
                 setModalState(() {
@@ -1531,19 +2361,19 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             }
 
             const recurrenceOptions = <String>{
-              'Aucune',
-              'Quotidienne',
-              'Jours de la semaine',
-              'Mensuelle',
+              'None',
+              'Daily',
+              'Weekdays',
+              'Monthly',
             };
-            const statusOptions = <String>{'À faire', 'En cours', 'Terminé'};
+            const statusOptions = <String>{'To do', 'In progress', 'Done'};
             final effectiveRecurrenceMode =
                 recurrenceOptions.contains(recurrenceMode)
                 ? recurrenceMode
-                : 'Aucune';
+                : 'None';
             final effectiveStatus = statusOptions.contains(status)
                 ? status
-                : 'À faire';
+                : 'To do';
             final effectiveSelectedProjectId =
                 selectedProjectId.isEmpty ||
                     _projects.any((project) => project.id == selectedProjectId)
@@ -1635,7 +2465,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           TextField(
                                             controller: nameController,
                                             decoration: const InputDecoration(
-                                              labelText: 'Nom',
+                                              prefixIcon: Icon(Icons.title),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          TextField(
+                                            controller: contactController,
+                                            decoration: const InputDecoration(
+                                              prefixIcon: Icon(Icons.person),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
@@ -1645,35 +2482,82 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 child: ListTile(
                                                   contentPadding:
                                                       EdgeInsets.zero,
-                                                  title: const Text(
-                                                    'Date debut',
-                                                  ),
-                                                  subtitle: Text(
-                                                    '${selectedDate.day.toString().padLeft(2, '0')}/${selectedDate.month.toString().padLeft(2, '0')}/${selectedDate.year}',
-                                                  ),
-                                                  trailing: const Icon(
+                                                  leading: const Icon(
                                                     Icons.calendar_month,
+                                                  ),
+                                                  title: Text(
+                                                    _formatOptionalDateUs(
+                                                      selectedDate,
+                                                      fallback: 'No start date',
+                                                    ),
                                                   ),
                                                   onTap: pickDate,
                                                 ),
                                               ),
                                               const SizedBox(width: 10),
                                               Expanded(
+                                                child: OutlinedButton.icon(
+                                                  onPressed:
+                                                      allDay ||
+                                                          selectedDate == null
+                                                      ? null
+                                                      : pickStartTime,
+                                                  icon: const Icon(
+                                                    Icons.schedule,
+                                                  ),
+                                                  label: Text(
+                                                    timeLabel(
+                                                      context,
+                                                      startTime,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Expanded(
                                                 child: ListTile(
                                                   contentPadding:
                                                       EdgeInsets.zero,
-                                                  title: const Text('Date fin'),
-                                                  subtitle: Text(
-                                                    '${selectedEndDate.day.toString().padLeft(2, '0')}/${selectedEndDate.month.toString().padLeft(2, '0')}/${selectedEndDate.year}',
-                                                  ),
-                                                  trailing: const Icon(
+                                                  leading: const Icon(
                                                     Icons.event_available,
                                                   ),
-                                                  onTap: pickEndDate,
+                                                  title: Text(
+                                                    _formatOptionalDateUs(
+                                                      selectedEndDate,
+                                                      fallback: 'No end date',
+                                                    ),
+                                                  ),
+                                                  onTap: selectedDate == null
+                                                      ? null
+                                                      : pickEndDate,
                                                 ),
                                               ),
-                                              SizedBox(
-                                                width: 145,
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: OutlinedButton.icon(
+                                                  onPressed:
+                                                      allDay ||
+                                                          selectedDate == null
+                                                      ? null
+                                                      : pickEndTime,
+                                                  icon: const Icon(
+                                                    Icons.schedule_send,
+                                                  ),
+                                                  label: Text(
+                                                    timeLabel(context, endTime),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Expanded(
                                                 child: CheckboxListTile(
                                                   contentPadding:
                                                       EdgeInsets.zero,
@@ -1689,40 +2573,17 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                           .leading,
                                                 ),
                                               ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Row(
-                                            children: [
-                                              Expanded(
-                                                child: OutlinedButton(
-                                                  onPressed: allDay
-                                                      ? null
-                                                      : pickStartTime,
-                                                  child: Text(
-                                                    'Heure début: ${timeLabel(startTime)}',
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(width: 10),
-                                              Expanded(
-                                                child: OutlinedButton(
-                                                  onPressed: allDay
-                                                      ? null
-                                                      : pickEndTime,
-                                                  child: Text(
-                                                    'Heure fin: ${timeLabel(endTime)}',
-                                                  ),
-                                                ),
-                                              ),
                                               const SizedBox(width: 10),
                                               Expanded(
                                                 child: TextField(
                                                   controller:
                                                       durationController,
+                                                  enabled: !allDay,
                                                   decoration:
                                                       const InputDecoration(
-                                                        labelText: 'Durée',
+                                                        prefixIcon: Icon(
+                                                          Icons.timer,
+                                                        ),
                                                       ),
                                                   onChanged: (value) {
                                                     if (isInternalDurationUpdate ||
@@ -1743,11 +2604,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             crossAxisAlignment:
                                                 CrossAxisAlignment.start,
                                             children: [
-                                              Text(
-                                                'Rappel',
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.titleSmall,
+                                              const Icon(
+                                                Icons.notifications_none,
+                                                size: 20,
+                                                color: Colors.black54,
                                               ),
                                               const SizedBox(height: 8),
                                               Wrap(
@@ -1777,15 +2637,22 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                   );
                                                 }).toList(),
                                               ),
-                                              const SizedBox(height: 6),
-                                              Text(
-                                                selectedReminders.isEmpty
-                                                    ? 'Aucun rappel selectionne'
-                                                    : '${selectedReminders.length} rappel(s) selectionne(s)',
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                              ),
+                                              if (selectedReminders.isNotEmpty)
+                                                const SizedBox(height: 6),
+                                              if (selectedReminders.isNotEmpty)
+                                                Text(
+                                                  '${selectedReminders.length} reminder(s) selected',
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                ),
+                                              if (selectedDate == null)
+                                                Text(
+                                                  'Set a start date to enable reminders.',
+                                                  style: Theme.of(
+                                                    context,
+                                                  ).textTheme.bodySmall,
+                                                ),
                                             ],
                                           ),
                                           const SizedBox(height: 12),
@@ -1793,42 +2660,43 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             initialValue:
                                                 effectiveRecurrenceMode,
                                             decoration: const InputDecoration(
-                                              labelText: 'Récurrence',
+                                              prefixIcon: Icon(Icons.repeat),
                                             ),
                                             items: const [
                                               DropdownMenuItem(
-                                                value: 'Aucune',
-                                                child: Text('Aucune'),
+                                                value: 'None',
+                                                child: Text('None'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Quotidienne',
-                                                child: Text('Quotidienne'),
+                                                value: 'Daily',
+                                                child: Text('Daily'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Jours de la semaine',
-                                                child: Text(
-                                                  'Jours de la semaine',
-                                                ),
+                                                value: 'Weekdays',
+                                                child: Text('Weekdays'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Mensuelle',
-                                                child: Text('Mensuelle'),
+                                                value: 'Monthly',
+                                                child: Text('Monthly'),
                                               ),
                                             ],
-                                            onChanged: (value) {
-                                              if (value != null) {
-                                                setModalState(() {
-                                                  recurrenceMode = value;
-                                                  if (value !=
-                                                      'Jours de la semaine') {
-                                                    selectedWeekdays.clear();
-                                                  }
-                                                });
-                                              }
-                                            },
+                                            onChanged: selectedDate == null
+                                                ? null
+                                                : (value) {
+                                                    if (value != null) {
+                                                      setModalState(() {
+                                                        recurrenceMode = value;
+                                                        if (value !=
+                                                            'Weekdays') {
+                                                          selectedWeekdays
+                                                              .clear();
+                                                        }
+                                                      });
+                                                    }
+                                                  },
                                           ),
                                           if (effectiveRecurrenceMode ==
-                                              'Jours de la semaine') ...[
+                                              'Weekdays') ...[
                                             const SizedBox(height: 8),
                                             Wrap(
                                               spacing: 8,
@@ -1841,19 +2709,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 return FilterChip(
                                                   label: Text(day),
                                                   selected: isSelected,
-                                                  onSelected: (selected) {
-                                                    setModalState(() {
-                                                      if (selected) {
-                                                        selectedWeekdays.add(
-                                                          day,
-                                                        );
-                                                      } else {
-                                                        selectedWeekdays.remove(
-                                                          day,
-                                                        );
-                                                      }
-                                                    });
-                                                  },
+                                                  onSelected:
+                                                      selectedDate == null
+                                                      ? null
+                                                      : (selected) {
+                                                          setModalState(() {
+                                                            if (selected) {
+                                                              selectedWeekdays
+                                                                  .add(day);
+                                                            } else {
+                                                              selectedWeekdays
+                                                                  .remove(day);
+                                                            }
+                                                          });
+                                                        },
                                                 );
                                               }).toList(),
                                             ),
@@ -1862,20 +2731,20 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           DropdownButtonFormField<String>(
                                             initialValue: effectiveStatus,
                                             decoration: const InputDecoration(
-                                              labelText: 'Statut',
+                                              prefixIcon: Icon(Icons.flag),
                                             ),
                                             items: const [
                                               DropdownMenuItem(
-                                                value: 'À faire',
-                                                child: Text('À faire'),
+                                                value: 'To do',
+                                                child: Text('To do'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'En cours',
-                                                child: Text('En cours'),
+                                                value: 'In progress',
+                                                child: Text('In progress'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Terminé',
-                                                child: Text('Terminé'),
+                                                value: 'Done',
+                                                child: Text('Done'),
                                               ),
                                             ],
                                             onChanged: (value) {
@@ -1887,23 +2756,16 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             },
                                           ),
                                           const SizedBox(height: 12),
-                                          TextField(
-                                            controller: contactController,
-                                            decoration: const InputDecoration(
-                                              labelText: 'Contact',
-                                            ),
-                                          ),
-                                          const SizedBox(height: 12),
                                           DropdownButtonFormField<String>(
                                             initialValue:
                                                 effectiveSelectedProjectId,
                                             decoration: const InputDecoration(
-                                              labelText: 'Projet',
+                                              prefixIcon: Icon(Icons.folder),
                                             ),
                                             items: [
                                               const DropdownMenuItem(
                                                 value: '',
-                                                child: Text('Aucun'),
+                                                child: Text('None'),
                                               ),
                                               ..._projects.map(
                                                 (project) => DropdownMenuItem(
@@ -1936,33 +2798,30 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                   ),
                                   child: Row(
                                     children: [
-                                      if (!isNew)
-                                        Expanded(
-                                          child: OutlinedButton.icon(
-                                            onPressed: () async {
-                                              setState(() {
-                                                _tasks.remove(task);
-                                              });
-                                              _saveTasks();
-                                              await closeDialogSafely(context);
-                                            },
-                                            icon: const Icon(Icons.close),
-                                            label: const Text('Supprimer'),
-                                          ),
-                                        ),
-                                      if (!isNew) const SizedBox(width: 10),
                                       TextButton(
                                         onPressed: () async {
                                           await closeDialogSafely(context);
                                         },
-                                        child: const Text('Annuler'),
+                                        child: const Text('Cancel'),
                                       ),
-                                      const SizedBox(width: 10),
+                                      if (!isNew) const SizedBox(width: 6),
+                                      if (!isNew)
+                                        TextButton(
+                                          onPressed: () async {
+                                            setState(() {
+                                              _tasks.remove(task);
+                                            });
+                                            _saveTasks();
+                                            await closeDialogSafely(context);
+                                          },
+                                          child: const Text('Delete'),
+                                        ),
+                                      const SizedBox(width: 6),
                                       Expanded(
-                                        flex: 2,
                                         child: FilledButton(
                                           onPressed: () async {
-                                            if (!allDay) {
+                                            if (!allDay &&
+                                                selectedDate != null) {
                                               syncMissingTimeFromDuration();
                                               syncDurationFromTimes();
 
@@ -1977,7 +2836,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                   (durationMinutes == null ||
                                                       durationMinutes <= 0)) {
                                                 showValidationMessage(
-                                                  'La durée doit être positive (ex: 01:30).',
+                                                  'Duration must be positive (e.g., 01:30).',
                                                 );
                                                 return;
                                               }
@@ -1993,7 +2852,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 if (endMinutes <=
                                                     startMinutes) {
                                                   showValidationMessage(
-                                                    'Heure fin doit être après heure début.',
+                                                    'End time must be after start time.',
                                                   );
                                                   return;
                                                 }
@@ -2013,35 +2872,49 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                   : nameController.text.trim();
                                               task.date = selectedDate;
                                               task.endDate =
-                                                  selectedEndDate.isBefore(
-                                                    selectedDate,
-                                                  )
+                                                  selectedDate == null
+                                                  ? null
+                                                  : selectedEndDate == null
+                                                  ? null
+                                                  : selectedEndDate!.isBefore(
+                                                      selectedDate!,
+                                                    )
                                                   ? selectedDate
                                                   : selectedEndDate;
-                                              task.allDay = allDay;
-                                              task.startTime = allDay
+                                              task.allDay = selectedDate == null
+                                                  ? false
+                                                  : allDay;
+                                              task.startTime =
+                                                  selectedDate == null || allDay
                                                   ? null
                                                   : startTime;
-                                              task.endTime = allDay
+                                              task.endTime =
+                                                  selectedDate == null || allDay
                                                   ? null
                                                   : endTime;
-                                              task.duration = durationController
-                                                  .text
-                                                  .trim();
+                                              task.duration =
+                                                  selectedDate == null
+                                                  ? ''
+                                                  : durationController.text
+                                                        .trim();
                                               task.reminder =
-                                                  _encodeReminderSelections(
-                                                    selectedReminders,
-                                                  );
-                                              if (recurrenceMode ==
-                                                  'Jours de la semaine') {
+                                                  selectedDate == null
+                                                  ? 'None'
+                                                  : _encodeReminderSelections(
+                                                      selectedReminders,
+                                                    );
+                                              if (selectedDate == null) {
+                                                recurrence = 'None';
+                                              } else if (recurrenceMode ==
+                                                  'Weekdays') {
                                                 final orderedDays = weekdays
                                                     .where(
                                                       (day) => selectedWeekdays
                                                           .contains(day),
                                                     );
                                                 recurrence = orderedDays.isEmpty
-                                                    ? 'Aucune'
-                                                    : 'Jours:${orderedDays.join(',')}';
+                                                    ? 'None'
+                                                    : 'Days:${orderedDays.join(',')}';
                                               } else {
                                                 recurrence = recurrenceMode;
                                               }
@@ -2072,7 +2945,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             _saveTasks();
                                             await closeDialogSafely(context);
                                           },
-                                          child: const Text('Enregistrer'),
+                                          child: const Text('Save'),
                                         ),
                                       ),
                                     ],
@@ -2106,7 +2979,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
     String status = project.status;
     ProjectColorOption selectedColor = project.color;
     String formatDate(DateTime value) {
-      return '${value.day.toString().padLeft(2, '0')}/${value.month.toString().padLeft(2, '0')}/${value.year}';
+      return _formatDateUs(value);
     }
 
     var controllersDisposed = false;
@@ -2172,10 +3045,10 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               }
             }
 
-            const statusOptions = <String>{'À faire', 'En cours', 'Terminé'};
+            const statusOptions = <String>{'To do', 'In progress', 'Done'};
             final effectiveStatus = statusOptions.contains(status)
                 ? status
-                : 'À faire';
+                : 'To do';
 
             return Material(
               type: MaterialType.transparency,
@@ -2259,41 +3132,30 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             CrossAxisAlignment.start,
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Text(
-                                            'Édition du projet',
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.titleLarge,
-                                          ),
-                                          const SizedBox(height: 16),
                                           TextField(
                                             controller: nameController,
                                             decoration: const InputDecoration(
-                                              labelText: 'Nom',
+                                              prefixIcon: Icon(Icons.title),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
                                           ListTile(
                                             contentPadding: EdgeInsets.zero,
-                                            title: const Text('Date de début'),
-                                            subtitle: Text(
-                                              formatDate(startDate),
-                                            ),
-                                            trailing: const Icon(
+                                            leading: const Icon(
                                               Icons.calendar_month,
                                             ),
+                                            title: Text(formatDate(startDate)),
                                             onTap: pickStartDate,
                                           ),
                                           ListTile(
                                             contentPadding: EdgeInsets.zero,
-                                            title: const Text('Date de fin'),
-                                            subtitle: Text(
-                                              endDate == null
-                                                  ? 'Non définie'
-                                                  : formatDate(endDate!),
-                                            ),
-                                            trailing: const Icon(
+                                            leading: const Icon(
                                               Icons.event_available,
+                                            ),
+                                            title: Text(
+                                              endDate == null
+                                                  ? 'Not set'
+                                                  : formatDate(endDate!),
                                             ),
                                             onTap: pickEndDate,
                                           ),
@@ -2303,27 +3165,27 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             minLines: 2,
                                             maxLines: 5,
                                             decoration: const InputDecoration(
-                                              labelText: 'Description',
+                                              prefixIcon: Icon(Icons.notes),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
                                           DropdownButtonFormField<String>(
                                             initialValue: effectiveStatus,
                                             decoration: const InputDecoration(
-                                              labelText: 'Statut',
+                                              prefixIcon: Icon(Icons.flag),
                                             ),
                                             items: const [
                                               DropdownMenuItem(
-                                                value: 'À faire',
-                                                child: Text('À faire'),
+                                                value: 'To do',
+                                                child: Text('To do'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'En cours',
-                                                child: Text('En cours'),
+                                                value: 'In progress',
+                                                child: Text('In progress'),
                                               ),
                                               DropdownMenuItem(
-                                                value: 'Terminé',
-                                                child: Text('Terminé'),
+                                                value: 'Done',
+                                                child: Text('Done'),
                                               ),
                                             ],
                                             onChanged: (value) {
@@ -2335,36 +3197,67 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             },
                                           ),
                                           const SizedBox(height: 14),
-                                          Text(
-                                            'Couleur',
-                                            style: Theme.of(
-                                              context,
-                                            ).textTheme.titleMedium,
+                                          const Icon(
+                                            Icons.palette,
+                                            size: 20,
+                                            color: Colors.black54,
                                           ),
                                           const SizedBox(height: 8),
                                           Wrap(
                                             spacing: 8,
                                             runSpacing: 8,
-                                            children: ProjectColorOption.values
-                                                .map((colorOption) {
-                                                  return ChoiceChip(
-                                                    label: Text(
-                                                      colorOption.label,
-                                                    ),
-                                                    selected:
-                                                        selectedColor ==
-                                                        colorOption,
-                                                    selectedColor:
-                                                        colorOption.color,
-                                                    onSelected: (_) {
+                                            children: ProjectColorOption.values.map((
+                                              colorOption,
+                                            ) {
+                                              final isSelected =
+                                                  selectedColor == colorOption;
+                                              return Tooltip(
+                                                message: colorOption.label,
+                                                child: Material(
+                                                  color: Colors.transparent,
+                                                  child: InkWell(
+                                                    onTap: () {
                                                       setModalState(() {
                                                         selectedColor =
                                                             colorOption;
                                                       });
                                                     },
-                                                  );
-                                                })
-                                                .toList(),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          999,
+                                                        ),
+                                                    child: AnimatedContainer(
+                                                      duration: const Duration(
+                                                        milliseconds: 120,
+                                                      ),
+                                                      width: 34,
+                                                      height: 34,
+                                                      decoration: BoxDecoration(
+                                                        color:
+                                                            colorOption.color,
+                                                        shape: BoxShape.circle,
+                                                        border: Border.all(
+                                                          color: isSelected
+                                                              ? Colors.black87
+                                                              : Colors.black12,
+                                                          width: isSelected
+                                                              ? 3
+                                                              : 1,
+                                                        ),
+                                                      ),
+                                                      child: isSelected
+                                                          ? const Icon(
+                                                              Icons.check,
+                                                              size: 18,
+                                                              color:
+                                                                  Colors.white,
+                                                            )
+                                                          : null,
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            }).toList(),
                                           ),
                                           const SizedBox(height: 18),
                                           SizedBox(
@@ -2379,8 +3272,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                     : nameController.text
                                                           .trim();
                                                 final newTask = TaskItem(
-                                                  name: 'Nouvelle tâche',
-                                                  date: _todayOnly,
+                                                  name: 'New task',
                                                   project: projectName,
                                                   projectId: project.id,
                                                   color:
@@ -2397,9 +3289,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                                 );
                                               },
                                               icon: const Icon(Icons.add_task),
-                                              label: const Text(
-                                                'Ajouter une tâche',
-                                              ),
+                                              label: const Text('Add a task'),
                                             ),
                                           ),
                                           const SizedBox(height: 12),
@@ -2422,7 +3312,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                         onPressed: () async {
                                           await closeDialogSafely(context);
                                         },
-                                        child: const Text('Annuler'),
+                                        child: const Text('Cancel'),
                                       ),
                                       const SizedBox(width: 6),
                                       TextButton(
@@ -2450,7 +3340,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                           _saveTasks();
                                           await closeDialogSafely(context);
                                         },
-                                        child: const Text('Supprimer'),
+                                        child: const Text('Delete'),
                                       ),
                                       const SizedBox(width: 6),
                                       Expanded(
@@ -2488,7 +3378,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                                             _saveTasks();
                                             await closeDialogSafely(context);
                                           },
-                                          child: const Text('Enregistrer'),
+                                          child: const Text('Save'),
                                         ),
                                       ),
                                     ],
@@ -2556,7 +3446,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             ),
             const SizedBox(width: 6),
             Tooltip(
-              message: 'Semaine',
+              message: 'Week',
               child: buildButton(
                 icon: Icons.calendar_view_week_rounded,
                 view: MainView.planning,
@@ -2564,7 +3454,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             ),
             const SizedBox(width: 6),
             Tooltip(
-              message: 'Projets',
+              message: 'Projects',
               child: buildButton(
                 icon: Icons.rocket_launch_rounded,
                 view: MainView.projects,
@@ -2589,8 +3479,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       ),
       child: Row(
         children: [
-          const Icon(Icons.search, size: 16, color: Colors.black54),
-          const SizedBox(width: 8),
           Expanded(
             child: TextField(
               controller: _headerSearchController,
@@ -2599,7 +3487,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               onSubmitted: (_) => _openSearchResultsPage(),
               decoration: const InputDecoration(
                 isDense: true,
-                hintText: 'Rechercher dans taches, projets et notes...',
+                hintText: 'Search tasks, projects, and notes...',
                 border: InputBorder.none,
                 filled: false,
                 contentPadding: EdgeInsets.zero,
@@ -2612,7 +3500,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 _headerSearchController.clear();
               });
             },
-            tooltip: 'Effacer la recherche',
+            tooltip: 'Clear search',
             icon: const Icon(
               Icons.close_rounded,
               size: 17,
@@ -2622,9 +3510,9 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           ),
           IconButton(
             onPressed: _openSearchResultsPage,
-            tooltip: 'Lancer la recherche',
+            tooltip: 'Run search',
             icon: const Icon(
-              Icons.arrow_forward_rounded,
+              Icons.search_rounded,
               size: 17,
               color: Colors.black54,
             ),
@@ -2655,7 +3543,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           leading: IconButton(
             onPressed: () => _cycleTaskStatus(task),
             icon: Icon(_statusIcon(task.status), color: _taskMarkerColor(task)),
-            tooltip: 'Changer le statut',
+            tooltip: 'Change status',
           ),
           title: _buildTaskNameWithRecurrenceIcon(
             task,
@@ -2686,13 +3574,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           const Spacer(),
           IconButton(
             onPressed: onCollapsePressed,
-            tooltip: collapsed ? 'Afficher' : 'Réduire',
+            tooltip: collapsed ? 'Show' : 'Collapse',
             icon: Icon(collapsed ? Icons.unfold_more : Icons.unfold_less),
             visualDensity: VisualDensity.compact,
           ),
           IconButton(
             onPressed: onExpandPressed,
-            tooltip: expanded ? 'Quitter plein écran' : 'Plein écran',
+            tooltip: expanded ? 'Exit full screen' : 'Full screen',
             icon: Icon(expanded ? Icons.fullscreen_exit : Icons.open_in_full),
             visualDensity: VisualDensity.compact,
           ),
@@ -2714,7 +3602,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               child: tasksForToday.isEmpty
                   ? Center(
                       child: Text(
-                        'Aucune tâche pour aujourd’hui.',
+                        'No tasks for today.',
                         style: Theme.of(context).textTheme.bodyLarge,
                       ),
                     )
@@ -2746,7 +3634,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             buildPaneHeader(
-              title: 'Timeline',
+              title: _formatLongDateUs(_todayOnly),
               collapsed: _todayTimelinePaneCollapsed,
               expanded: isTimelineExpanded,
               onCollapsePressed: () =>
@@ -2770,11 +3658,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _addTaskFromPrompt(),
             decoration: InputDecoration(
-              hintText: 'Entrer le nom de la nouvelle tâche…',
+              hintText: 'Enter the new task name...',
               suffixIcon: IconButton(
                 onPressed: _addTaskFromPrompt,
                 icon: const Icon(Icons.add),
-                tooltip: 'Ajouter',
+                tooltip: 'Add',
               ),
             ),
           ),
@@ -2826,7 +3714,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                       _statusIcon(project.status),
                       color: project.color.color,
                     ),
-                    tooltip: 'Changer le statut',
+                    tooltip: 'Change status',
                   ),
                   Expanded(
                     child: GestureDetector(
@@ -2853,9 +3741,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                         }
                       });
                     },
-                    tooltip: isExpanded
-                        ? 'Masquer les tâches'
-                        : 'Afficher les tâches',
+                    tooltip: isExpanded ? 'Hide tasks' : 'Show tasks',
                     icon: Icon(
                       isExpanded ? Icons.expand_less : Icons.expand_more,
                     ),
@@ -2868,14 +3754,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                   child: projectTasks.isEmpty
                       ? Text(
-                          'Aucune tâche pour ce projet.',
+                          'No tasks for this project.',
                           style: Theme.of(context).textTheme.bodySmall,
                         )
                       : Column(
                           children: projectTasks.map((task) {
                             return Padding(
                               key: ValueKey(
-                                'project-task-${project.id}-${task.name}-${task.date.toIso8601String()}',
+                                'project-task-${project.id}-${task.name}-${task.date?.toIso8601String() ?? 'no-date'}',
                               ),
                               padding: const EdgeInsets.only(top: 8),
                               child: _buildTaskTile(task),
@@ -2898,11 +3784,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             textInputAction: TextInputAction.done,
             onSubmitted: (_) => _addProjectFromPrompt(),
             decoration: InputDecoration(
-              hintText: 'Entrer le nom du nouveau projet…',
+              hintText: 'Enter the new project name...',
               suffixIcon: IconButton(
                 onPressed: _addProjectFromPrompt,
                 icon: const Icon(Icons.add),
-                tooltip: 'Ajouter le projet',
+                tooltip: 'Add project',
               ),
             ),
           ),
@@ -2913,12 +3799,11 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               textInputAction: TextInputAction.done,
               onSubmitted: (_) => _addTaskToSelectedProjectFromPrompt(),
               decoration: InputDecoration(
-                hintText:
-                    'Ajouter une tâche au projet "${selectedProject.name}"…',
+                hintText: 'Add a task to project "${selectedProject.name}"...',
                 suffixIcon: IconButton(
                   onPressed: _addTaskToSelectedProjectFromPrompt,
                   icon: const Icon(Icons.add_task_outlined),
-                  tooltip: 'Ajouter la tâche au projet',
+                  tooltip: 'Add task to project',
                 ),
               ),
             ),
@@ -2927,7 +3812,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             child: _projects.isEmpty
                 ? Center(
                     child: Text(
-                      'Aucun projet disponible.',
+                      'No project available.',
                       style: Theme.of(context).textTheme.bodyLarge,
                     ),
                   )
@@ -2937,7 +3822,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text(
-                'Projet sélectionné: ${selectedProject.name} (${selectedProjectTasks.length} tâche(s))',
+                'Selected project: ${selectedProject.name} (${selectedProjectTasks.length} task(s))',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
@@ -2949,7 +3834,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
   Widget _buildPlanningDayView(DateTime date) {
     final day = _dateOnly(date);
     final isTodayView = _isSameDay(day, _todayOnly);
-    final dayTasks = isTodayView ? _todayTasks : _tasksForDate(day);
+    final dayTasks = _tasksForDate(day);
     final timedTasks =
         dayTasks
             .where((task) => task.startTime != null && task.endTime != null)
@@ -3086,8 +3971,8 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
       }
     }
 
-    // Force la plage horaire à inclure l'heure actuelle
-    // Toujours élargir la plage pour inclure l'heure actuelle
+    // Force la plage horaire � inclure l'heure actuelle
+    // Toujours �largir la plage pour inclure l'heure actuelle
     final forcedMin = nowMinutes - 180;
     final forcedMax = nowMinutes + 180;
     final minMinutes = firstStart < forcedMin ? firstStart : forcedMin;
@@ -3325,7 +4210,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
-                  'Aucune tache planifiee pour cette journee.',
+                  'No tasks scheduled for this day.',
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
               ),
@@ -3381,7 +4266,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                           maxLines: null,
                           textAlignVertical: TextAlignVertical.top,
                           decoration: const InputDecoration(
-                            hintText: 'Ecris tes notes de semaine...',
+                            hintText: 'Write your weekly notes...',
                             border: InputBorder.none,
                             filled: false,
                             contentPadding: EdgeInsets.zero,
@@ -3424,13 +4309,13 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '${_dayLabel(day)} ${_twoDigits(day.day)}/${_twoDigits(day.month)}',
+                        '${_dayLabel(day)} ${_formatMonthDayUs(day)}',
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 8),
                       if (tasks.isEmpty)
                         Text(
-                          'Aucune tache',
+                          'No tasks',
                           style: Theme.of(context).textTheme.bodySmall,
                         )
                       else
@@ -3568,8 +4453,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
 
   Widget _buildPlanningView() {
     final anchor = _dateOnly(_planningAnchorDate);
-    final headerTitle =
-        'Semaine du ${_twoDigits(_startOfWeek(anchor).day)}/${_twoDigits(_startOfWeek(anchor).month)}';
+    final headerTitle = 'Week of ${_formatMonthDayUs(_startOfWeek(anchor))}';
 
     DateTime previousAnchor() {
       return anchor.subtract(const Duration(days: 7));
@@ -3594,7 +4478,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   _syncWeekNotesControllerForDate(_planningAnchorDate);
                 },
                 icon: const Icon(Icons.chevron_left),
-                tooltip: 'Periode precedente',
+                tooltip: 'Previous period',
               ),
               Expanded(
                 child: Text(
@@ -3604,6 +4488,14 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                 ),
               ),
               IconButton(
+                key: _goToCurrentWeekButtonKey,
+                onPressed: () {
+                  _showPlanningMonthPickerPopup();
+                },
+                icon: const Icon(Icons.today_rounded),
+                tooltip: 'Pick a date and jump to its week',
+              ),
+              IconButton(
                 onPressed: () {
                   setState(() {
                     _planningAnchorDate = nextAnchor();
@@ -3611,7 +4503,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   _syncWeekNotesControllerForDate(_planningAnchorDate);
                 },
                 icon: const Icon(Icons.chevron_right),
-                tooltip: 'Periode suivante',
+                tooltip: 'Next period',
               ),
             ],
           ),
@@ -3691,7 +4583,7 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                         onPressed: () => _dismissReminder(reminder.id),
                         icon: const Icon(Icons.close, size: 16),
                         visualDensity: VisualDensity.compact,
-                        tooltip: 'Fermer',
+                        tooltip: 'Close',
                       ),
                     ],
                   ),
@@ -3801,13 +4693,13 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Resultats de recherche: "${widget.query}"')),
+      appBar: AppBar(title: Text('Search results: "${widget.query}"')),
       body: widget.results.isEmpty
           ? Center(
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Text(
-                  'Aucun resultat pour "${widget.query}".',
+                  'No results for "${widget.query}".',
                   style: Theme.of(context).textTheme.titleMedium,
                   textAlign: TextAlign.center,
                 ),
@@ -3828,37 +4720,8 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.black12),
                   ),
-                  child: ListTile(
-                    title: Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: item.matchedFields
-                            .map(
-                              (field) => Padding(
-                                padding: const EdgeInsets.only(bottom: 4),
-                                child: Text.rich(
-                                  TextSpan(
-                                    style: bodyStyle,
-                                    children: [
-                                      TextSpan(
-                                        text: '${field.label}: ',
-                                        style: bodyStyle.copyWith(
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      ..._highlightedSpans(
-                                        field.value,
-                                        bodyStyle,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            )
-                            .toList(),
-                      ),
-                    ),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
                     onTap: () {
                       final noteContent = item.noteContent;
                       if (noteContent != null) {
@@ -3882,7 +4745,7 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
                                   autofocus: true,
                                   keyboardType: TextInputType.multiline,
                                   decoration: const InputDecoration(
-                                    hintText: 'Ecris ta note ici...',
+                                    hintText: 'Write your note here...',
                                     border: OutlineInputBorder(),
                                     contentPadding: EdgeInsets.all(10),
                                   ),
@@ -3896,6 +4759,80 @@ class _SearchResultsPageState extends State<_SearchResultsPage> {
 
                       item.onTap?.call();
                     },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (item.category == 'Note')
+                            Text.rich(
+                              TextSpan(
+                                style: bodyStyle,
+                                children: [
+                                  TextSpan(
+                                    text: 'Note: ',
+                                    style: bodyStyle.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  ..._highlightedSpans(
+                                    item.subtitle,
+                                    bodyStyle,
+                                  ),
+                                ],
+                              ),
+                            )
+                          else
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Text.rich(
+                                    TextSpan(
+                                      style: bodyStyle.copyWith(
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                      children: _highlightedSpans(
+                                        item.title,
+                                        bodyStyle.copyWith(
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                if (item.meta.isNotEmpty) ...[
+                                  const SizedBox(width: 12),
+                                  Text(
+                                    item.meta,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ],
+                            ),
+                          if (item.category != 'Note' &&
+                              item.subtitle.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: Text.rich(
+                                TextSpan(
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                  children: _highlightedSpans(
+                                    item.subtitle,
+                                    Theme.of(context).textTheme.bodySmall ??
+                                        const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 );
               },

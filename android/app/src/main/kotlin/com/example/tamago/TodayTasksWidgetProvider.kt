@@ -1,4 +1,4 @@
-package com.example.tamago
+package com.estel.tamago
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
@@ -36,7 +36,7 @@ class TodayTasksWidgetProvider : AppWidgetProvider() {
 
             for (widgetId in widgetIds) {
                 val views = RemoteViews(context.packageName, R.layout.today_tasks_widget)
-                views.setTextViewText(R.id.widget_title, "Taches du jour")
+                views.setTextViewText(R.id.widget_title, "Today's tasks")
                 views.setTextViewText(R.id.widget_tasks, buildTodayTasksText(context))
                 views.setOnClickPendingIntent(R.id.widget_root, openAppPendingIntent(context))
                 manager.updateAppWidget(widgetId, views)
