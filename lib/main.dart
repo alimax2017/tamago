@@ -2281,20 +2281,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
               }
             }
 
-            void clearDate() {
-              setModalState(() {
-                selectedDate = null;
-                selectedEndDate = null;
-                startTime = null;
-                endTime = null;
-                allDay = false;
-                durationController.clear();
-                selectedReminders.clear();
-                recurrenceMode = 'None';
-                selectedWeekdays.clear();
-              });
-            }
-
             Future<void> pickEndDate() async {
               if (selectedDate == null) {
                 return;
@@ -2310,12 +2296,6 @@ class _TodayPageState extends State<TodayPage> with WidgetsBindingObserver {
                   selectedEndDate = pickedDate;
                 });
               }
-            }
-
-            void clearEndDate() {
-              setModalState(() {
-                selectedEndDate = null;
-              });
             }
 
             Future<void> pickStartTime() async {
